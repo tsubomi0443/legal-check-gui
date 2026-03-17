@@ -3,29 +3,30 @@ import {
   Folder, FolderOpen, FileText, File, Send, Upload, ChevronRight, ChevronDown,
   CheckCircle, Loader2, AlertCircle, GitMerge, MessageSquare,
   PanelRightClose, PanelRight, PanelBottomClose, PanelBottom, PanelLeftClose, PanelLeft,
-  Settings, X, Check, Edit3, FolderPlus, Trash2, Save
+  Settings, X, Check, Edit3, FolderPlus, Trash2, Save, Info, Database
 } from 'lucide-react';
 
 // ============================================================================
-// Wails (Go) バックエンド連携用の型定義
+// Wails (Go) Backend API Interface
 // ============================================================================
 declare global {
   interface Window {
     go?: {
       main: {
         App: {
-          CreateFolder(parentId: string | null, name: string): Promise<string>;
+          CreateFolder(parentId: string, name: string): Promise<string>;
           DeleteNode(id: string): Promise<boolean>;
-          MoveNode(itemId: string, targetFolderId: string | null): Promise<boolean>;
-          SaveFile(name: string, content: string, parentId: string | null): Promise<string>;
+          MoveNode(itemId: string, targetFolderId: string): Promise<boolean>;
+          SaveFile(name: string, content: string, parentId: string): Promise<string>;
           AnalyzeText(text: string): Promise<string>;
+          SetNewDatasource(path: string): Promise<boolean>;
         }
       }
     }
   }
 }
 
-// --- 型定義 ---
+// --- Types ---
 type FileType = 'folder' | 'pdf' | 'txt' | 'csv' | 'md';
 
 interface FileNode {
@@ -42,7 +43,7 @@ interface DiffLine {
 }
 
 interface DiffChunk {
-  id?: string;
+  id: string;
   type: 'diff' | 'unchanged';
   text?: string;
   lines?: DiffLine[];
@@ -63,14 +64,10 @@ type ModalState =
   | { type: 'none' }
   | { type: 'createFolder', targetParentId: string | null }
   | { type: 'deleteConfirm', id: string, name: string }
-  | { type: 'saveFreeText' };
+  | { type: 'saveFreeText' }
+  | { type: 'dataSource' };
 
-interface FolderOption {
-  id: string | null;
-  name: string;
-}
-
-// --- モックデータ ---
+// --- Mock Data ---
 const initialFiles: FileNode[] = [
   { 
     id: 'folder-1', name: 'プロジェクト資料', type: 'folder', isOpen: true, 
@@ -85,57 +82,66 @@ const initialFiles: FileNode[] = [
 const initialContents: Record<string, string> = {
   'file-1': '【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員',
   'file-2': '2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。',
-  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【修正内容】\n・元の安定したコードをベースに復旧しました。\n・Wails環境の通信エラーや、幅の調整、修正がない場合などの不具合を局所的に解決しています。',
-  'free-mode': 'ここは自由記述モードです。\n\n自由にテキストを入力し、「保存」ボタンを押すと、ツリー内の指定したフォルダにテキストファイルとして保存できます。'
-};
-
-// --- AIモック (プレビュー環境用) ---
-const simulateReview = (text: string): string => {
-  let newText = text;
-  const replacements = [
-    { target: '目的とする。', replacement: '目的としています。' },
-    { target: '全社員', replacement: '全従業員（契約社員・アルバイト含む）' },
-    { target: '協議', replacement: 'ディスカッション' }
-  ];
-  
-  replacements.forEach(({target, replacement}) => {
-    if (newText.includes(target)) {
-      newText = newText.replace(target, replacement);
-    }
-  });
-  
-  return newText; 
+  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【レイアウト崩れの修正】\n・左ペイン（および右ペイン）を閉じた際に、中の要素がはみ出して重なってしまう不具合を修正しました。\n・コンテナに `overflow-hidden` を追加し、閉じた時は中身が完全に隠れるようになっています。',
+  'free-mode': 'ここは自由記述モードです。\n\n入力して「保存」を押すとフォルダを選んでファイル化できます。\n「送信」を押すとAI分析が始まります。'
 };
 
 // ============================================================================
-// Wails バックエンドAPI Wrapper (安全な呼び出し)
+// Wails Backend API Wrapper
 // ============================================================================
 const backendAPI = {
   createFolder: async (parentId: string | null, name: string): Promise<string> => {
-    // 最小限のガード: メソッドが存在する場合のみGoを呼び出し、それ以外はモック処理へ
-    if (window.go?.main?.App?.CreateFolder) return await window.go.main.App.CreateFolder(parentId, name);
+    const pId = parentId || "";
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.CreateFolder) {
+      return await window.go.main.App.CreateFolder(pId, name);
+    }
     return new Promise(resolve => setTimeout(() => resolve(`folder-${Date.now()}`), 200));
   },
   deleteItem: async (id: string): Promise<boolean> => {
-    if (window.go?.main?.App?.DeleteNode) return await window.go.main.App.DeleteNode(id);
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.DeleteNode) {
+      return await window.go.main.App.DeleteNode(id);
+    }
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
   moveItem: async (itemId: string, targetFolderId: string | null): Promise<boolean> => {
-    if (window.go?.main?.App?.MoveNode) return await window.go.main.App.MoveNode(itemId, targetFolderId);
+    const tId = targetFolderId || "";
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.MoveNode) {
+      return await window.go.main.App.MoveNode(itemId, tId);
+    }
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
-  uploadFile: async (name: string, content: string, parentId: string | null): Promise<string> => {
-    if (window.go?.main?.App?.SaveFile) return await window.go.main.App.SaveFile(name, content, parentId);
+  saveFile: async (name: string, content: string, parentId: string | null): Promise<string> => {
+    const pId = parentId || "";
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.SaveFile) {
+      return await window.go.main.App.SaveFile(name, content, pId);
+    }
     return new Promise(resolve => setTimeout(() => resolve(`file-${Date.now()}`), 200));
   },
   analyzeText: async (text: string): Promise<string> => {
-    if (window.go?.main?.App?.AnalyzeText) return await window.go.main.App.AnalyzeText(text);
-    return new Promise(resolve => setTimeout(() => resolve(simulateReview(text)), 800));
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.AnalyzeText) {
+      return await window.go.main.App.AnalyzeText(text);
+    }
+    let suggested = text;
+    const replacements = [
+      { target: '目的とする。', replacement: '目的としています。' },
+      { target: '全社員', replacement: '全従業員（契約社員・アルバイト含む）' },
+      { target: '協議', replacement: 'ディスカッション' }
+    ];
+    replacements.forEach(({target, replacement}) => {
+      if (suggested.includes(target)) suggested = suggested.replace(target, replacement);
+    });
+    return new Promise(resolve => setTimeout(() => resolve(suggested), 800));
+  },
+  setNewDatasource: async (path: string): Promise<boolean> => {
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.SetNewDatasource) {
+      return await window.go.main.App.SetNewDatasource(path);
+    }
+    return new Promise(resolve => setTimeout(() => resolve(true), 400));
   }
 };
 
 // ============================================================================
-// ツリー操作のユーティリティ関数
+// Tree Utils
 // ============================================================================
 const findNode = (nodes: FileNode[], id: string): FileNode | null => {
   for (const node of nodes) {
@@ -162,12 +168,10 @@ const findParentId = (nodes: FileNode[], targetId: string, currentParentId: stri
 const deleteNodeById = (nodes: FileNode[], id: string): FileNode[] => {
   return nodes
     .filter(node => node.id !== id)
-    .map(node => {
-      if (node.children) {
-        return { ...node, children: deleteNodeById(node.children, id) };
-      }
-      return node;
-    });
+    .map(node => ({
+      ...node,
+      children: node.children ? deleteNodeById(node.children, id) : undefined
+    }));
 };
 
 const insertNodeToParent = (nodes: FileNode[], parentId: string | null, newNode: FileNode): FileNode[] => {
@@ -183,26 +187,24 @@ const insertNodeToParent = (nodes: FileNode[], parentId: string | null, newNode:
   });
 };
 
+const getFolderOptions = (nodes: FileNode[], prefix: string = ''): {id: string, name: string}[] => {
+  let options: {id: string, name: string}[] = [];
+  nodes.forEach(node => {
+    if (node.type === 'folder') {
+      options.push({ id: node.id, name: prefix + node.name });
+      if (node.children) options = options.concat(getFolderOptions(node.children, prefix + node.name + ' / '));
+    }
+  });
+  return options;
+};
+
 const isDescendant = (nodes: FileNode[], parentId: string, childId: string): boolean => {
   const parent = findNode(nodes, parentId);
   if (!parent || !parent.children) return false;
   return findNode(parent.children, childId) !== null;
 };
 
-const getFolderOptions = (nodes: FileNode[], prefix: string = ''): FolderOption[] => {
-  let options: FolderOption[] = [];
-  nodes.forEach(node => {
-    if (node.type === 'folder') {
-      options.push({ id: node.id, name: prefix + node.name });
-      if (node.children) {
-        options = options.concat(getFolderOptions(node.children, prefix + node.name + ' / '));
-      }
-    }
-  });
-  return options;
-};
-
-// --- Diff計算処理 ---
+// --- Diff Utils ---
 const calculateDiff = (oldStr: string, newStr: string): DiffLine[] => {
   const oldLines = oldStr.split('\n');
   const newLines = newStr.split('\n');
@@ -213,949 +215,787 @@ const calculateDiff = (oldStr: string, newStr: string): DiffLine[] => {
       else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
   }
-  let i = oldLines.length;
-  let j = newLines.length;
-  const result: DiffLine[] = [];
+  let i = oldLines.length, j = newLines.length;
+  const res: DiffLine[] = [];
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      result.unshift({ type: 'unchanged', text: oldLines[i - 1] });
+      res.unshift({ type: 'unchanged', text: oldLines[i - 1] });
       i--; j--;
     } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      result.unshift({ type: 'added', text: newLines[j - 1] });
+      res.unshift({ type: 'added', text: newLines[j - 1] });
       j--;
-    } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
-      result.unshift({ type: 'removed', text: oldLines[i - 1] });
+    } else {
+      res.unshift({ type: 'removed', text: oldLines[i - 1] });
       i--;
     }
   }
-  return result;
+  return res;
 };
 
-const generateDiffChunks = (diffResult: DiffLine[]): DiffChunk[] => {
+const generateChunks = (lines: DiffLine[]): DiffChunk[] => {
   const chunks: DiffChunk[] = [];
-  let currentDiffLines: DiffLine[] = [];
-  const reasons = ["表現をより明確にしました。", "より丁寧な語彙に置き換えました。"];
-  
-  const flushDiff = () => {
-    if (currentDiffLines.length > 0) {
-      chunks.push({ 
-        id: `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        type: 'diff', 
-        lines: currentDiffLines,
-        reason: reasons[Math.floor(Math.random() * reasons.length)],
-        originalText: currentDiffLines.filter(l => l.type === 'removed').map(l => l.text).join('\n'),
-        suggestedText: currentDiffLines.filter(l => l.type === 'added').map(l => l.text).join('\n'),
+  let currentGroup: DiffLine[] = [];
+  const flush = () => {
+    if (currentGroup.length > 0) {
+      chunks.push({
+        id: Math.random().toString(36).substring(2, 11),
+        type: 'diff',
+        lines: [...currentGroup],
+        reason: "表現の改善案があります。",
+        originalText: currentGroup.filter(l => l.type === 'removed').map(l => l.text).join('\n'),
+        suggestedText: currentGroup.filter(l => l.type === 'added').map(l => l.text).join('\n'),
         applied: false
       });
-      currentDiffLines = [];
+      currentGroup = [];
     }
   };
-  
-  diffResult.forEach(line => {
+  lines.forEach(line => {
     if (line.type === 'unchanged') {
-      flushDiff();
-      chunks.push({ type: 'unchanged', text: line.text });
+      flush();
+      chunks.push({ id: Math.random().toString(36).substring(2, 11), type: 'unchanged', text: line.text });
     } else {
-      currentDiffLines.push(line);
+      currentGroup.push(line);
     }
   });
-  flushDiff();
+  flush();
   return chunks;
 };
 
+
+// ============================================================================
+// ★ 共通ツリーコンポーネント
+// ============================================================================
+interface TreeProps {
+  nodes: FileNode[];
+  depth?: number;
+  selectedId?: string;
+  isFreeMode?: boolean;
+  dragOverId?: string | null;
+  readOnly?: boolean; 
+  onSelect?: (id: string) => void;
+  onToggle?: (id: string) => void;
+  onDelete?: (id: string, name: string) => void;
+  onDragStart?: (e: React.DragEvent, id: string) => void;
+  onDragOver?: (e: React.DragEvent, id: string) => void;
+  onDragLeave?: () => void;
+  onDrop?: (e: React.DragEvent, id: string) => void;
+}
+
+const FileTreeView: React.FC<TreeProps> = ({
+  nodes, depth = 0, selectedId, isFreeMode, dragOverId, readOnly = false,
+  onSelect, onToggle, onDelete, onDragStart, onDragOver, onDragLeave, onDrop
+}) => {
+  if (!nodes || nodes.length === 0) return null;
+
+  return (
+    <>
+      {nodes.map(node => {
+        const isSelected = selectedId === node.id && !isFreeMode && !readOnly;
+        const isOver = dragOverId === node.id && !readOnly;
+
+        return (
+          <div key={node.id}>
+            <div 
+              draggable={!readOnly}
+              onDragStart={(e) => !readOnly && onDragStart && onDragStart(e, node.id)}
+              onDragOver={(e) => { e.preventDefault(); !readOnly && onDragOver && onDragOver(e, node.id); }}
+              onDragLeave={() => !readOnly && onDragLeave && onDragLeave()}
+              onDrop={(e) => { e.preventDefault(); !readOnly && onDrop && onDrop(e, node.id); }}
+              onClick={(e) => {
+                if (readOnly) {
+                  if (node.type === 'folder' && onToggle) onToggle(node.id);
+                  return;
+                }
+                if (onSelect) onSelect(node.id);
+                if (node.type === 'folder' && onToggle) onToggle(node.id);
+              }}
+              className={`group flex items-center justify-between py-1 px-2 cursor-pointer text-sm transition-colors 
+                ${isSelected ? 'bg-blue-100 text-blue-800 font-medium' : 'hover:bg-gray-200'} 
+                ${isOver ? 'bg-blue-200 ring-2 ring-blue-400' : ''}
+                ${readOnly ? 'hover:bg-gray-100 cursor-default' : ''}
+              `}
+              style={{ paddingLeft: `${depth * 16 + 8}px` }}
+            >
+              <div className="flex items-center flex-1 overflow-hidden">
+                {node.type === 'folder' ? (
+                  <>
+                    <span className="mr-1 text-gray-400 flex-shrink-0 cursor-pointer">
+                      {node.isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                    <Folder className={`mr-2 flex-shrink-0 ${readOnly ? 'text-gray-400' : 'text-blue-500'}`} size={16} />
+                  </>
+                ) : (
+                  <FileText className={`mr-2 flex-shrink-0 ${node.type === 'pdf' ? 'text-red-400' : 'text-gray-400'}`} size={16} style={{ marginLeft: '20px' }} />
+                )}
+                <span className={`truncate ${readOnly && node.type !== 'folder' ? 'text-gray-500' : ''}`}>{node.name}</span>
+              </div>
+              
+              {!readOnly && onDelete && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onDelete(node.id, node.name); }}
+                  className="p-1 opacity-0 group-hover:opacity-100 hover:text-red-500 text-gray-400 transition-opacity flex-shrink-0"
+                  title="削除"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+            {node.isOpen && node.children && (
+              <FileTreeView 
+                nodes={node.children} depth={depth + 1} 
+                selectedId={selectedId} isFreeMode={isFreeMode} dragOverId={dragOverId} readOnly={readOnly}
+                onSelect={onSelect} onToggle={onToggle} onDelete={onDelete}
+                onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+};
+
+
+// ============================================================================
+// Main Application Component
+// ============================================================================
 export default function App() {
   const [files, setFiles] = useState<FileNode[]>(initialFiles);
   const [contents, setContents] = useState<Record<string, string>>(initialContents);
-  const [selectedFileId, setSelectedFileId] = useState<string>('file-3');
+  const [selectedId, setSelectedId] = useState<string>('file-3');
+  const [isFreeMode, setIsFreeMode] = useState<boolean>(false);
   
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isLoadingTree, setIsLoadingTree] = useState<boolean>(false);
-  const [diffResults, setDiffResults] = useState<Record<string, DiffChunk[] | null>>({});
+  const [diffResults, setDiffResults] = useState<Record<string, DiffChunk[]>>({});
+  
   const [toast, setToast] = useState<ToastType | null>(null);
-  
-  // ★ 右ペイン専用のポップアップメッセージ状態
-  const [innerPopupMessage, setInnerPopupMessage] = useState<string | null>(null);
-  
   const [modal, setModal] = useState<ModalState>({ type: 'none' });
-  const [isFreeMode, setIsFreeMode] = useState<boolean>(false);
+  const [innerPopup, setInnerPopup] = useState<string | null>(null);
 
-  // UIステート
-  const [showLeftPane, setShowLeftPane] = useState<boolean>(true);
-  const [showResultPane, setShowResultPane] = useState<boolean>(false);
+  const [showLeft, setShowLeft] = useState<boolean>(true);
+  const [showResult, setShowResult] = useState<boolean>(false);
+  const [layout, setLayout] = useState<LayoutMode>('horizontal');
   const [autoExpand, setAutoExpand] = useState<boolean>(true);
   const [showSettings, setShowSettings] = useState<boolean>(false);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('horizontal');
 
-  // DnDステート
-  const [dragOverTargetId, setDragOverTargetId] = useState<string | null>(null);
+  const [dsPath, setDsPath] = useState<string>('');
+  const [dsNodes, setDsNodes] = useState<FileNode[]>([]);
 
-  // リサイズステート
-  const [leftPaneWidth, setLeftPaneWidth] = useState<number>(260);
-  const [rightPaneWidth, setRightPaneWidth] = useState<number>(450);
-  const [bottomPaneHeight, setBottomPaneHeight] = useState<number>(300);
-  const [isDraggingLeft, setIsDraggingLeft] = useState<boolean>(false);
-  const [isDraggingRight, setIsDraggingRight] = useState<boolean>(false);
-  const [isDraggingBottom, setIsDraggingBottom] = useState<boolean>(false);
+  const [leftWidth, setLeftWidth] = useState<number>(260);
+  const [rightWidth, setRightWidth] = useState<number>(450);
+  const [bottomHeight, setBottomHeight] = useState<number>(300);
+  const [dragType, setDragType] = useState<'none' | 'left' | 'right' | 'bottom'>('none');
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
-  const newFolderInputRef = useRef<HTMLInputElement>(null);
-  const saveFileInputRef = useRef<HTMLInputElement>(null);
-  const saveFolderSelectRef = useRef<HTMLSelectElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dirInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
+    const closeSettings = (e: MouseEvent) => {
       if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setShowSettings(false);
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", closeSettings);
+    return () => document.removeEventListener("mousedown", closeSettings);
   }, []);
 
-  useEffect(() => {
-    if (modal.type === 'createFolder' && newFolderInputRef.current) {
-      newFolderInputRef.current.focus();
-    } else if (modal.type === 'saveFreeText' && saveFileInputRef.current) {
-      saveFileInputRef.current.focus();
-      saveFileInputRef.current.select();
-    }
-  }, [modal.type]);
+  const activeId = isFreeMode ? 'free-mode' : selectedId;
+  const activeNode = isFreeMode ? null : findNode(files, selectedId);
+  const currentDiff = diffResults[activeId] || [];
 
-  const effectiveFileId = isFreeMode ? 'free-mode' : selectedFileId;
-  const activeFile = isFreeMode ? null : findNode(files, selectedFileId);
-  const currentDiff = diffResults[effectiveFileId];
-
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+  const showToast = (message: string, type: ToastType['type'] = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
 
   // ============================================================================
-  // ツリー操作 / モーダルアクション
+  // DataSource Processing
   // ============================================================================
-  const openCreateFolderModal = () => {
-    let targetParentId: string | null = null;
-    if (activeFile) {
-      targetParentId = activeFile.type === 'folder' ? activeFile.id : findParentId(files, activeFile.id);
+  const handleDataSourceSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    
+    const samplePath = fileList[0].webkitRelativePath;
+    setDsPath(samplePath.split('/')[0] || '選択されたフォルダ');
+
+    const root: FileNode[] = [];
+    
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      const pathParts = file.webkitRelativePath.split('/');
+      let currentLevel = root;
+      let currentPathId = 'ds';
+
+      for (let j = 0; j < pathParts.length; j++) {
+        const part = pathParts[j];
+        const isFile = j === pathParts.length - 1;
+        currentPathId += `/${part}`;
+
+        let existingNode = currentLevel.find(n => n.name === part);
+
+        if (!existingNode) {
+          let type: FileType = 'folder';
+          if (isFile) {
+            const ext = part.split('.').pop()?.toLowerCase();
+            type = (ext === 'pdf' || ext === 'txt' || ext === 'csv' || ext === 'md') ? (ext as FileType) : 'txt';
+          }
+
+          existingNode = {
+            id: currentPathId,
+            name: part,
+            type: type,
+            isOpen: true,
+            children: isFile ? undefined : []
+          };
+          currentLevel.push(existingNode);
+        }
+
+        if (!isFile && existingNode.children) {
+          currentLevel = existingNode.children;
+        }
+      }
     }
-    setModal({ type: 'createFolder', targetParentId });
+    setDsNodes(root);
   };
 
-  const confirmCreateFolder = async (folderName: string) => {
-    folderName = folderName.trim();
-    if (!folderName || modal.type !== 'createFolder') {
-      setModal({ type: 'none' });
-      return;
-    }
-    const targetParentId = modal.targetParentId;
+  const handleDsToggle = (id: string) => {
+    const toggle = (list: FileNode[]): FileNode[] => list.map(n => 
+      n.id === id ? { ...n, isOpen: !n.isOpen } : { ...n, children: n.children ? toggle(n.children) : undefined }
+    );
+    setDsNodes(prev => toggle(prev));
+  };
+
+
+  // ============================================================================
+  // Handlers
+  // ============================================================================
+  const handleCreateFolder = async (name: string) => {
+    const parentId = activeNode ? (activeNode.type === 'folder' ? activeNode.id : findParentId(files, activeNode.id)) : null;
     setModal({ type: 'none' });
     setIsLoadingTree(true);
     try {
-      const newId = await backendAPI.createFolder(targetParentId, folderName);
-      const newNode: FileNode = { id: newId, name: folderName, type: 'folder', isOpen: true, children: [] };
-      setFiles(prev => insertNodeToParent(prev, targetParentId, newNode));
-      showToast(`フォルダ「${folderName}」を作成しました`);
-    } catch (e) {
-      showToast('フォルダの作成に失敗しました', 'error');
-    } finally {
-      setIsLoadingTree(false);
-    }
+      const id = await backendAPI.createFolder(parentId, name);
+      const newNode: FileNode = { id, name, type: 'folder', isOpen: true, children: [] };
+      setFiles(prev => insertNodeToParent(prev, parentId, newNode));
+      showToast("フォルダを作成しました");
+    } catch (e) { showToast("エラーが発生しました", "error"); }
+    finally { setIsLoadingTree(false); }
   };
 
-  const openDeleteConfirmModal = (e: React.MouseEvent, id: string, name: string) => {
-    e.stopPropagation();
-    setModal({ type: 'deleteConfirm', id, name });
-  };
-
-  const confirmDelete = async () => {
-    if (modal.type !== 'deleteConfirm') return;
-    const { id, name } = modal;
+  const handleDelete = async (id: string, name: string) => {
     setModal({ type: 'none' });
     setIsLoadingTree(true);
     try {
       await backendAPI.deleteItem(id);
-      if (selectedFileId === id || isDescendant(files, id, selectedFileId)) {
-        setSelectedFileId('');
-      }
       setFiles(prev => deleteNodeById(prev, id));
-      showToast(`「${name}」を削除しました`);
-    } catch (err) {
-      showToast('削除に失敗しました', 'error');
-    } finally {
-      setIsLoadingTree(false);
-    }
+      if (selectedId === id || isDescendant(files, id, selectedId)) setSelectedId('');
+      showToast(`${name}を削除しました`);
+    } catch (e) { showToast("削除に失敗しました", "error"); }
+    finally { setIsLoadingTree(false); }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const uploadedFile = e.target.files[0];
-    let targetParentId: string | null = null;
-    if (activeFile) {
-      targetParentId = activeFile.type === 'folder' ? activeFile.id : findParentId(files, activeFile.id);
-    }
-    setIsLoadingTree(true);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const content = event.target?.result as string;
-      const isPdf = uploadedFile.name.toLowerCase().endsWith('.pdf');
-      const textContent = isPdf ? `[${uploadedFile.name} の抽出プレビュー]\n\n※PDFの内容` : content;
-      try {
-        const newId = await backendAPI.uploadFile(uploadedFile.name, textContent, targetParentId);
-        const newFileNode: FileNode = { id: newId, name: uploadedFile.name, type: isPdf ? 'pdf' : 'txt' };
-        setFiles(prev => insertNodeToParent(prev, targetParentId, newFileNode));
-        setContents(prev => ({ ...prev, [newId]: textContent }));
-        setSelectedFileId(newId);
-        showToast('ファイルを追加しました');
-      } catch (err) {
-        showToast('ファイルの追加に失敗しました', 'error');
-      } finally {
-        setIsLoadingTree(false);
-      }
-    };
-    reader.readAsText(uploadedFile);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const confirmSaveFreeText = async (fileName: string, folderId: string | null) => {
-    fileName = fileName.trim();
-    if (!fileName) {
-      showToast('ファイル名を入力してください', 'error');
-      return;
-    }
-    if (!fileName.includes('.')) fileName += '.txt';
-
+  const handleSaveFreeText = async (name: string, folderId: string | null) => {
+    const fileName = name.includes('.') ? name : `${name}.txt`;
+    const content = contents['free-mode'] || '';
     setModal({ type: 'none' });
     setIsLoadingTree(true);
-
-    const content = contents['free-mode'] || '';
-
     try {
-      const newId = await backendAPI.uploadFile(fileName, content, folderId);
-      const newFileNode: FileNode = { id: newId, name: fileName, type: 'txt' };
-      
-      setFiles(prev => insertNodeToParent(prev, folderId, newFileNode));
-      setContents(prev => ({ ...prev, [newId]: content }));
-      
+      const id = await backendAPI.saveFile(fileName, content, folderId);
+      const newNode: FileNode = { id, name: fileName, type: 'txt' };
+      setFiles(prev => insertNodeToParent(prev, folderId, newNode));
+      setContents(prev => ({ ...prev, [id]: content }));
       setIsFreeMode(false);
-      setSelectedFileId(newId);
-      showToast(`「${fileName}」を保存しました`);
-    } catch (err) {
-      showToast('保存に失敗しました', 'error');
-    } finally {
-      setIsLoadingTree(false);
-    }
+      setSelectedId(id);
+      showToast("保存しました");
+    } catch (e) { showToast("保存に失敗しました", "error"); }
+    finally { setIsLoadingTree(false); }
   };
 
-  // ============================================================================
-  // 送信（AI分析）処理
-  // ============================================================================
   const handleSend = async () => {
-    if (!effectiveFileId) return;
+    if (!activeId) return;
     setIsSending(true);
-    setInnerPopupMessage(null); 
-    
+    setInnerPopup(null);
     try {
-      const currentText = contents[effectiveFileId] || '';
-      const suggestedText = await backendAPI.analyzeText(currentText); 
+      const original = contents[activeId] || '';
+      const suggested = await backendAPI.analyzeText(original);
       
-      if (currentText === suggestedText) {
-        // ★ 修正案がない場合は差分計算をせずにポップアップ表示
-        setDiffResults(prev => ({ ...prev, [effectiveFileId]: [] }));
-        setInnerPopupMessage('修正の必要はありませんでした。');
-        if (autoExpand) setShowResultPane(true);
+      if (original === suggested) {
+        setDiffResults(prev => ({ ...prev, [activeId]: [] }));
+        setInnerPopup("文章に変更提案はありませんでした。");
+        if (autoExpand) setShowResult(true);
       } else {
-        const rawDiff = calculateDiff(currentText, suggestedText);
-        const chunks = generateDiffChunks(rawDiff);
-        setDiffResults(prev => ({ ...prev, [effectiveFileId]: chunks }));
-        if (autoExpand) setShowResultPane(true);
-        showToast('修正案を受信しました', 'success');
+        const diffLines = calculateDiff(original, suggested);
+        const chunks = generateChunks(diffLines);
+        setDiffResults(prev => ({ ...prev, [activeId]: chunks }));
+        if (autoExpand) setShowResult(true);
       }
-    } catch (e) {
-      showToast('バックエンド通信エラーが発生しました', 'error');
-    } finally {
-      setIsSending(false);
+    } catch (e) { showToast("通信エラー", "error"); }
+    finally { setIsSending(false); }
+  };
+
+  const applySuggestion = (chunkId: string, original: string, suggested: string) => {
+    setContents(prev => ({
+      ...prev,
+      [activeId]: (prev[activeId] || '').replace(original, suggested)
+    }));
+    setDiffResults(prev => ({
+      ...prev,
+      [activeId]: (prev[activeId] || []).map(c => c.id === chunkId ? { ...c, applied: true } : c)
+    }));
+    showToast("修正を適用しました");
+  };
+
+  const handleTreeToggle = (id: string) => {
+    const toggle = (list: FileNode[]): FileNode[] => list.map(n => 
+      n.id === id ? { ...n, isOpen: !n.isOpen } : { ...n, children: n.children ? toggle(n.children) : undefined }
+    );
+    setFiles(prev => toggle(prev));
+  };
+
+  // --- Resize ---
+  const handleMouseMove = (e: MouseEvent) => {
+    if (dragType === 'left') setLeftWidth(Math.max(150, Math.min(window.innerWidth - 300, e.clientX)));
+    if (dragType === 'right') setRightWidth(Math.max(200, Math.min(window.innerWidth - 300, window.innerWidth - e.clientX)));
+    if (dragType === 'bottom') setBottomHeight(Math.max(100, Math.min(window.innerHeight - 200, window.innerHeight - e.clientY)));
+  };
+  const stopDrag = () => setDragType('none');
+
+  useEffect(() => {
+    if (dragType !== 'none') {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', stopDrag);
     }
-  };
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', stopDrag);
+    };
+  }, [dragType]);
+
 
   // ============================================================================
-  // ドラッグ＆ドロップ処理
+  // Render
   // ============================================================================
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    e.dataTransfer.setData('application/x-file-id', id); e.dataTransfer.effectAllowed = 'move';
-  };
-  const handleDragOver = (e: React.DragEvent, targetId: string | null) => {
-    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move';
-    if (dragOverTargetId !== targetId) setDragOverTargetId(targetId);
-  };
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setDragOverTargetId(null);
-  };
-  const handleDrop = async (e: React.DragEvent, targetFolderId: string | null) => {
-    e.preventDefault(); e.stopPropagation(); setDragOverTargetId(null);
-    const draggedId = e.dataTransfer.getData('application/x-file-id');
-    if (!draggedId || draggedId === targetFolderId) return;
-    if (targetFolderId && isDescendant(files, draggedId, targetFolderId)) {
-      showToast('親フォルダを自身の子フォルダに移動することはできません', 'error'); return;
-    }
-    const currentParentId = findParentId(files, draggedId);
-    if (currentParentId === targetFolderId) return;
-    const draggedNode = findNode(files, draggedId);
-    if (!draggedNode) return;
-    setIsLoadingTree(true);
-    try {
-      await backendAPI.moveItem(draggedId, targetFolderId);
-      setFiles(prev => {
-        const withoutNode = deleteNodeById(prev, draggedId);
-        return insertNodeToParent(withoutNode, targetFolderId, draggedNode);
-      });
-      showToast('アイテムを移動しました');
-    } catch (err) {
-      showToast('移動に失敗しました', 'error');
-    } finally {
-      setIsLoadingTree(false);
-    }
-  };
-
-  const handleToggleFolder = (e: React.MouseEvent<HTMLDivElement>, folderId: string) => {
-    e.stopPropagation();
-    setFiles(prev => {
-      const toggle = (nodes: FileNode[]): FileNode[] => nodes.map(n => {
-        if (n.id === folderId && n.type === 'folder') return { ...n, isOpen: !n.isOpen };
-        if (n.children) return { ...n, children: toggle(n.children) };
-        return n;
-      });
-      return toggle(prev);
-    });
-  };
-
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setContents({ ...contents, [effectiveFileId]: e.target.value });
-    setDiffResults(prev => ({ ...prev, [effectiveFileId]: null }));
-    setShowResultPane(false);
-    setInnerPopupMessage(null); 
-  };
-
-  const handleApplySuggestion = (chunkId?: string, originalText?: string, suggestedText?: string) => {
-    if (!chunkId || !suggestedText) return;
-    setContents(prev => {
-      const currentText = prev[effectiveFileId] || '';
-      let newText = originalText ? currentText.replace(originalText, suggestedText) : currentText + '\n' + suggestedText;
-      return { ...prev, [effectiveFileId]: newText };
-    });
-    setDiffResults(prev => {
-      const currentDiffs = prev[effectiveFileId];
-      if (!currentDiffs) return prev;
-      return { ...prev, [effectiveFileId]: currentDiffs.map(c => c.id === chunkId ? { ...c, applied: true } : c) };
-    });
-    showToast('提案内容を元文へ適用しました', 'success');
-  };
-
-  // ============================================================================
-  // リサイズ処理 (独立した元の構造 ＋ 上限・下限の安全な微調整)
-  // ============================================================================
-  const startResizingLeft = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDraggingLeft(true);
-    const startX = e.clientX;
-    const startWidth = leftPaneWidth;
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      // ★ 左ペインが大きくなりすぎないよう、最大幅を 400px に固定
-      setLeftPaneWidth(Math.max(180, Math.min(400, startWidth + moveEvent.clientX - startX)));
-    };
-    const onMouseUp = () => {
-      setIsDraggingLeft(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const startResizingRight = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDraggingRight(true);
-    const startX = e.clientX;
-    const startWidth = rightPaneWidth;
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      // ★ 右ペインのドラッグが効かなくなるのを防ぐため、最大幅を window.innerWidth - 200 に緩和
-      setRightPaneWidth(Math.max(250, Math.min(window.innerWidth - 200, startWidth - (moveEvent.clientX - startX))));
-    };
-    const onMouseUp = () => {
-      setIsDraggingRight(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const startResizingBottom = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDraggingBottom(true);
-    const startY = e.clientY;
-    const startHeight = bottomPaneHeight;
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      // ★ 下ペインの上限を緩和
-      setBottomPaneHeight(Math.max(150, Math.min(window.innerHeight - 150, startHeight - (moveEvent.clientY - startY))));
-    };
-    const onMouseUp = () => {
-      setIsDraggingBottom(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const renderTree = (nodes: FileNode[], depth: number = 0): React.ReactNode => {
-    return nodes.map(node => {
-      const isSelected = selectedFileId === node.id;
-      const isDragOver = dragOverTargetId === node.id;
-
-      if (node.type === 'folder') {
-        return (
-          <div key={node.id}>
-            <div 
-              draggable
-              onDragStart={(e) => handleDragStart(e, node.id)}
-              onDragOver={(e) => handleDragOver(e, node.id)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, node.id)}
-              className={`group flex items-center justify-between py-1.5 px-2 pr-3 cursor-pointer text-sm transition-colors ${
-                isDragOver ? 'bg-blue-200 ring-2 ring-blue-400 z-10 relative' :
-                isSelected && !isFreeMode ? 'bg-blue-100/50 text-blue-800' : 'hover:bg-gray-200 text-gray-700'
-              }`}
-              style={{ paddingLeft: `${depth * 16 + 8}px` }}
-              onClick={(e) => { 
-                setSelectedFileId(node.id); 
-                setIsFreeMode(false);
-                handleToggleFolder(e, node.id); 
-              }}
-            >
-              <div className="flex items-center flex-1 overflow-hidden">
-                <span className="mr-1 flex-shrink-0 text-gray-500">{node.isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
-                <span className="mr-2 flex-shrink-0 text-blue-500">{node.isOpen ? <FolderOpen size={16} /> : <Folder size={16} />}</span>
-                <span className="truncate select-none">{node.name}</span>
-              </div>
+  return (
+    <div className="flex h-screen bg-gray-50 text-gray-900 font-sans overflow-hidden select-none">
+      
+      {/* --- Sidebar --- */}
+      {/* ★ 修正: overflow-hidden を外枠の div に追加し、幅0の際にはみ出さないようにしました */}
+      <div 
+        className="flex flex-col bg-white border-r border-gray-200 transition-[width] duration-200 ease-in-out relative z-10 flex-shrink-0 overflow-hidden"
+        style={{ width: showLeft ? leftWidth : 0 }}
+      >
+        <div className="flex flex-col h-full overflow-hidden" style={{ width: leftWidth, minWidth: leftWidth }}>
+          <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-xs font-bold text-gray-400 tracking-wider uppercase">Input Mode</span>
               <button 
-                onClick={(e) => openDeleteConfirmModal(e, node.id, node.name)}
-                className="p-1 ml-2 text-gray-400 hover:text-red-500 rounded opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 flex-shrink-0 bg-gray-50 hover:bg-red-50"
-                title="削除"
+                onClick={() => setIsFreeMode(!isFreeMode)}
+                className={`w-10 h-5 rounded-full p-1 transition-colors ${isFreeMode ? 'bg-amber-400' : 'bg-gray-300'}`}
               >
-                <Trash2 size={14} />
+                <div className={`w-3 h-3 bg-white rounded-full transition-transform ${isFreeMode ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
             </div>
-            {node.isOpen && node.children && <div>{renderTree(node.children, depth + 1)}</div>}
-          </div>
-        );
-      }
-      return (
-        <div 
-          key={node.id}
-          draggable
-          onDragStart={(e) => handleDragStart(e, node.id)}
-          className={`group flex items-center justify-between py-1.5 px-2 pr-3 cursor-pointer text-sm transition-colors ${
-            isSelected && !isFreeMode ? 'bg-blue-100 text-blue-700 font-medium' : 'hover:bg-gray-200 text-gray-700'
-          }`}
-          style={{ paddingLeft: `${depth * 16 + 28}px` }}
-          onClick={() => { setSelectedFileId(node.id); setIsFreeMode(false); }}
-        >
-          <div className="flex items-center flex-1 overflow-hidden">
-            <span className={`mr-2 flex-shrink-0 ${node.type === 'pdf' ? 'text-red-500' : 'text-gray-500'}`}>
-              {node.type === 'pdf' ? <FileText size={16} /> : <File size={16} />}
-            </span>
-            <span className="truncate select-none">{node.name}</span>
-          </div>
-          <button 
-            onClick={(e) => openDeleteConfirmModal(e, node.id, node.name)}
-            className="p-1 ml-2 text-gray-400 hover:text-red-500 rounded opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 flex-shrink-0 bg-white hover:bg-red-50"
-            title="削除"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-      );
-    });
-  };
-
-  return (
-    <div 
-      className={`flex h-screen bg-gray-100 text-gray-800 font-sans overflow-hidden relative ${
-        (isDraggingLeft || isDraggingRight) ? 'select-none cursor-col-resize' : 
-        isDraggingBottom ? 'select-none cursor-row-resize' : ''
-      }`}
-    >
-      {/* === 全体モーダル領域 === */}
-      {modal.type !== 'none' && (
-        <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-4">
-          
-          {modal.type === 'createFolder' && (
-            <div className="bg-white rounded-lg shadow-xl w-80 overflow-hidden">
-              <div className="p-4 border-b border-gray-200 font-semibold text-gray-700 flex items-center">
-                <FolderPlus size={18} className="mr-2 text-blue-600" />フォルダを追加
-              </div>
-              <div className="p-4">
-                <input 
-                  type="text" ref={newFolderInputRef} placeholder="新しいフォルダ名"
-                  className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') confirmCreateFolder(e.currentTarget.value);
-                    if (e.key === 'Escape') setModal({type: 'none'});
-                  }}
-                />
-              </div>
-              <div className="p-3 bg-gray-50 flex justify-end space-x-2">
-                <button onClick={() => setModal({type: 'none'})} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded transition-colors">キャンセル</button>
-                <button onClick={() => confirmCreateFolder(newFolderInputRef.current?.value || '')} className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded transition-colors">作成</button>
-              </div>
+            <div className="flex justify-between w-full px-1 mb-4 text-[11px] font-semibold text-gray-400">
+              <span className={!isFreeMode ? 'text-blue-600' : ''}>ファイル</span>
+              <span className={isFreeMode ? 'text-amber-600' : ''}>自由記述</span>
             </div>
-          )}
-
-          {modal.type === 'deleteConfirm' && (
-            <div className="bg-white rounded-lg shadow-xl w-80 overflow-hidden">
-              <div className="p-4 border-b border-gray-200 font-semibold text-gray-700 flex items-center text-red-600">
-                <AlertCircle size={18} className="mr-2" />削除の確認
-              </div>
-              <div className="p-4 text-sm text-gray-600 leading-relaxed">
-                「<span className="font-semibold text-gray-800">{modal.name}</span>」を削除してもよろしいですか？<br/><br/>
-                <span className="text-red-500 text-xs">※この操作は元に戻せません。フォルダの場合は中身もすべて削除されます。</span>
-              </div>
-              <div className="p-3 bg-gray-50 flex justify-end space-x-2">
-                <button onClick={() => setModal({type: 'none'})} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded transition-colors">キャンセル</button>
-                <button onClick={confirmDelete} className="px-3 py-1.5 text-sm bg-red-600 text-white hover:bg-red-700 rounded transition-colors">削除する</button>
-              </div>
-            </div>
-          )}
-
-          {modal.type === 'saveFreeText' && (
-            <div className="bg-white rounded-lg shadow-xl w-96 overflow-hidden">
-              <div className="p-4 border-b border-gray-200 font-semibold text-gray-700 flex items-center">
-                <Save size={18} className="mr-2 text-blue-600" />
-                自由記述を保存
-              </div>
-              <div className="p-4 space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">ファイル名</label>
-                  <input 
-                    type="text" 
-                    ref={saveFileInputRef}
-                    defaultValue="名称未設定.txt"
-                    className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') confirmSaveFreeText(saveFileInputRef.current?.value || '', saveFolderSelectRef.current?.value || null);
-                      if (e.key === 'Escape') setModal({type: 'none'});
-                    }}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">保存先フォルダ</label>
-                  <select 
-                    ref={saveFolderSelectRef}
-                    className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                  >
-                    <option value="">(最上位ルートに保存)</option>
-                    {getFolderOptions(files).map(opt => (
-                      <option key={opt.id || 'root'} value={opt.id || ''}>{opt.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="p-3 bg-gray-50 flex justify-end space-x-2">
-                <button onClick={() => setModal({type: 'none'})} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-200 rounded transition-colors">キャンセル</button>
+            {!isFreeMode && (
+              <div className="flex flex-col gap-2">
                 <button 
-                  onClick={() => confirmSaveFreeText(saveFileInputRef.current?.value || '', saveFolderSelectRef.current?.value || null)} 
-                  className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded transition-colors"
-                >
-                  保存
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* === 左ペイン === */}
-      <div 
-        className={`flex-shrink-0 bg-gray-50 flex flex-col z-10 shadow-sm overflow-hidden ${(!isDraggingLeft && !isDraggingRight && !isDraggingBottom) ? 'transition-[width] duration-300 ease-in-out' : ''}`}
-        style={{ width: showLeftPane ? leftPaneWidth : 0 }}
-      >
-        <div className="flex flex-col h-full bg-gray-50" style={{ width: leftPaneWidth, minWidth: leftPaneWidth }}>
-          <div className="p-3 border-b border-gray-200 bg-gray-100 flex flex-col items-center justify-center relative">
-            <div className="text-[10px] font-bold text-gray-500 mb-1.5 tracking-widest uppercase">Input Mode</div>
-            <div 
-              onClick={() => setIsFreeMode(!isFreeMode)}
-              className={`relative w-14 h-7 rounded-full cursor-pointer transition-colors duration-300 flex items-center p-1 ${isFreeMode ? 'bg-amber-400' : 'bg-slate-300'}`}
-              style={{ boxShadow: 'inset 0 3px 6px rgba(0,0,0,0.3), inset 0 -2px 4px rgba(255,255,255,0.4)' }}
-            >
-              <div 
-                className={`absolute w-5 h-5 rounded-full shadow-md transform transition-transform duration-300 flex items-center justify-center ${isFreeMode ? 'translate-x-7 bg-white' : 'translate-x-0 bg-white'}`}
-                style={{ border: '1px solid rgba(0,0,0,0.1)', boxShadow: '0 2px 4px rgba(0,0,0,0.2), inset 0 -1px 2px rgba(0,0,0,0.1), inset 0 1px 2px rgba(255,255,255,0.8)' }}
-              >
-                <div className="w-1 h-2.5 bg-gray-300 rounded-full shadow-inner opacity-60"></div>
-              </div>
-            </div>
-            <div className="flex justify-between w-full px-5 mt-1.5 text-[11px] font-semibold select-none">
-              <span className={!isFreeMode ? 'text-blue-600' : 'text-gray-400 transition-colors'}>ファイル</span>
-              <span className={isFreeMode ? 'text-amber-600' : 'text-gray-400 transition-colors'}>自由記述</span>
-            </div>
-          </div>
-
-          {isFreeMode ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-gray-400 bg-gray-50/50">
-              <Edit3 size={32} className="mb-3 text-amber-200" />
-              <p className="font-medium text-sm text-gray-600">自由記述モード</p>
-              <p className="text-xs mt-2 leading-relaxed">エディタに直接テキストを<br/>入力してください。</p>
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col overflow-hidden relative">
-              <div className="p-3 border-b border-gray-200 bg-white shadow-sm z-10 flex flex-col gap-2 relative">
-                <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".txt,.pdf,.csv,.md" />
-                <button 
-                  onClick={openCreateFolderModal}
+                  onClick={() => setModal({ type: 'createFolder', targetParentId: null })}
+                  className="flex items-center justify-center py-1.5 bg-white border border-gray-200 rounded shadow-sm text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
                   disabled={isLoadingTree}
-                  className="w-full flex items-center justify-center py-1.5 px-3 bg-white border border-gray-300 rounded shadow-sm text-sm font-medium text-gray-700 hover:bg-blue-50 hover:border-blue-300 transition-colors disabled:opacity-50"
-                >
-                  <FolderPlus size={16} className="mr-2 text-blue-500" />
-                  <span className="truncate">フォルダを追加</span>
-                </button>
+                ><FolderPlus size={14} className="mr-2 text-blue-500" />フォルダ追加</button>
                 <button 
                   onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center justify-center py-1.5 bg-white border border-gray-200 rounded shadow-sm text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
                   disabled={isLoadingTree}
-                  className="w-full flex items-center justify-center py-1.5 px-3 bg-white border border-gray-300 rounded shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                ><Upload size={14} className="mr-2 text-gray-500" />ファイル追加</button>
+              </div>
+            )}
+            <input type="file" ref={fileInputRef} className="hidden" accept=".txt,.pdf,.md,.csv" onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                setIsLoadingTree(true);
+                const reader = new FileReader();
+                reader.onload = async (ev) => {
+                  try {
+                    const content = ev.target?.result as string;
+                    const parentId = activeNode?.type === 'folder' ? activeNode.id : findParentId(files, activeNode?.id || '');
+                    const newId = await backendAPI.uploadFile(file.name, content, parentId);
+                    setFiles(prev => insertNodeToParent(prev, parentId, { id: newId, name: file.name, type: file.name.endsWith('.pdf') ? 'pdf' : 'txt' }));
+                    setContents(prev => ({ ...prev, [newId]: content }));
+                    setSelectedId(newId); setIsFreeMode(false);
+                    showToast("追加しました");
+                  } catch (err) { showToast("追加失敗", "error"); }
+                  finally { setIsLoadingTree(false); }
+                };
+                reader.readAsText(file);
+              }
+              if (fileInputRef.current) fileInputRef.current.value = '';
+            }} />
+          </div>
+          
+          <div className="flex-1 overflow-y-auto py-2 relative">
+            {isFreeMode ? (
+               <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400">
+                 <Edit3 size={32} className="mb-3 text-amber-300" />
+                 <p className="font-medium text-sm text-gray-600">自由記述モード</p>
+                 <p className="text-xs mt-2 leading-relaxed">右のエディタに直接入力してください。</p>
+               </div>
+            ) : (
+              <>
+                {isLoadingTree && <div className="absolute inset-0 bg-white/50 z-20 flex justify-center pt-4"><Loader2 className="animate-spin text-blue-400" size={20} /></div>}
+                <div 
+                  className={`min-h-full ${dragOverId === null ? 'bg-transparent' : 'bg-blue-50/50'}`}
+                  onDragOver={(e) => { e.preventDefault(); setDragOverId(null); }}
+                  onDrop={async (e) => {
+                    e.preventDefault(); setDragOverId(null);
+                    const draggedId = e.dataTransfer.getData('nodeId');
+                    if (!draggedId) return;
+                    setIsLoadingTree(true);
+                    try {
+                      await backendAPI.moveItem(draggedId, null);
+                      const draggedNode = findNode(files, draggedId);
+                      if (draggedNode) setFiles(prev => insertNodeToParent(deleteNodeById(prev, draggedId), null, draggedNode));
+                    } catch (err) {}
+                    finally { setIsLoadingTree(false); }
+                  }}
                 >
-                  <Upload size={16} className="mr-2 text-gray-500" />
-                  <span className="truncate">ファイルを追加</span>
-                </button>
-              </div>
-
-              <div 
-                className={`flex-1 overflow-y-auto py-2 transition-colors relative ${dragOverTargetId === null ? '' : 'bg-blue-50/50'}`}
-                onDragOver={(e) => handleDragOver(e, null)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, null)}
-              >
-                {isLoadingTree && (
-                  <div className="absolute inset-0 bg-white/50 z-20 flex justify-center pt-10">
-                    <Loader2 size={24} className="animate-spin text-blue-500" />
-                  </div>
-                )}
-                {dragOverTargetId === null && (
-                  <div className="absolute inset-0 pointer-events-none border-2 border-dashed border-blue-400 m-2 rounded-lg opacity-50 z-10"></div>
-                )}
-
-                {renderTree(files)}
-                
-                {files.length === 0 && !isLoadingTree && (
-                  <div className="text-center text-gray-400 text-xs mt-10 p-4 pointer-events-none">
-                    フォルダは空です。<br/>上部のボタンから作成してください。
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+                  <FileTreeView 
+                    nodes={files}
+                    selectedId={selectedId}
+                    isFreeMode={isFreeMode}
+                    dragOverId={dragOverId}
+                    onSelect={(id) => { setSelectedId(id); setIsFreeMode(false); }}
+                    onToggle={handleTreeToggle}
+                    onDelete={(id, name) => setModal({ type: 'deleteConfirm', id, name })}
+                    onDragStart={(e, id) => e.dataTransfer.setData('nodeId', id)}
+                    onDragOver={(e, id) => { e.preventDefault(); setDragOverId(id); }}
+                    onDragLeave={() => setDragOverId(null)}
+                    onDrop={async (e, targetId) => {
+                      e.preventDefault(); setDragOverId(null);
+                      const draggedId = e.dataTransfer.getData('nodeId');
+                      if (draggedId === targetId) return;
+                      if (isDescendant(files, draggedId, targetId)) { showToast("無効な移動です", "error"); return; }
+                      setIsLoadingTree(true);
+                      const targetParent = findNode(files, targetId)?.type === 'folder' ? targetId : findParentId(files, targetId);
+                      try {
+                        await backendAPI.moveItem(draggedId, targetParent);
+                        const draggedNode = findNode(files, draggedId);
+                        if (draggedNode) setFiles(prev => insertNodeToParent(deleteNodeById(prev, draggedId), targetParent, draggedNode));
+                      } catch (err) { showToast("失敗", "error"); }
+                      finally { setIsLoadingTree(false); }
+                    }}
+                  />
+                  {files.length === 0 && !isLoadingTree && <div className="text-center text-gray-400 text-xs mt-10 p-4">アイテムがありません</div>}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* --- 左ペイン リサイザー --- */}
-      {showLeftPane && (
-        <div 
-          className={`w-1 flex-shrink-0 cursor-col-resize z-20 transition-colors duration-150 ${isDraggingLeft ? 'bg-blue-500' : 'bg-gray-300 hover:bg-blue-400'}`}
-          onMouseDown={startResizingLeft}
-        />
-      )}
+      {/* --- Resizer Left --- */}
+      {showLeft && <div className="w-1 bg-gray-200 hover:bg-blue-400 cursor-col-resize z-20 transition-colors flex-shrink-0" onMouseDown={() => setDragType('left')} />}
 
-      {/* === メイン領域（エディタ ＋ レスポンス結果） === */}
-      <div className={`flex flex-1 overflow-hidden ${layoutMode === 'vertical' ? 'flex-col' : 'flex-row'}`}>
+      {/* --- Main Content --- */}
+      <div className={`flex flex-1 overflow-hidden relative ${layout === 'vertical' ? 'flex-col' : 'flex-row'}`}>
         
-        {/* === エディタペイン === */}
-        <div className="flex-1 flex flex-col bg-white relative z-0 min-w-[200px] min-h-[150px]">
-          {activeFile || isFreeMode ? (
-            <>
-              <div className="px-3 md:px-4 py-2 border-b border-gray-200 flex flex-wrap gap-x-4 gap-y-2 items-center justify-between bg-white shadow-sm z-10 relative">
-                
-                <div className="flex items-center min-w-[120px] flex-1 overflow-hidden">
-                  <button 
-                    onClick={() => setShowLeftPane(!showLeftPane)}
-                    className={`p-1.5 mr-2 rounded transition-colors flex-shrink-0 ${!showLeftPane ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}
-                    title={showLeftPane ? "サイドバーを閉じる" : "サイドバーを開く"}
-                  >
-                    {showLeftPane ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
-                  </button>
+        {/* Editor Pane */}
+        <div className="flex-1 flex flex-col bg-white min-w-[300px]">
+          <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white z-20 flex-shrink-0">
+            <div className="flex items-center flex-1 truncate">
+              <button onClick={() => setShowLeft(!showLeft)} className="p-1.5 hover:bg-gray-100 rounded text-gray-500 mr-2 flex-shrink-0">
+                {showLeft ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
+              </button>
+              {isFreeMode ? <Edit3 size={16} className="text-amber-500 mr-2 flex-shrink-0" /> : <FileText size={16} className="text-blue-500 mr-2 flex-shrink-0" />}
+              <span className="font-bold truncate text-sm">{isFreeMode ? '自由記述' : (activeNode?.name || '未選択')}</span>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {isFreeMode && (
+                <button 
+                  onClick={() => setModal({ type: 'saveFreeText' })}
+                  className="flex items-center px-3 py-1.5 border border-gray-200 rounded text-xs font-medium hover:bg-gray-50 transition-colors"
+                ><Save size={14} className="mr-1.5 text-gray-500" />保存</button>
+              )}
+              <button 
+                disabled={isSending || (!isFreeMode && (!activeNode || activeNode.type === 'folder'))}
+                onClick={handleSend}
+                className="flex items-center px-4 py-1.5 bg-blue-600 text-white rounded text-xs font-bold hover:bg-blue-700 disabled:bg-gray-300 shadow-sm"
+              >
+                {isSending ? <Loader2 size={14} className="animate-spin mr-1.5" /> : <Send size={14} className="mr-1.5" />}
+                送信
+              </button>
+              <div className="w-px h-4 bg-gray-200 mx-1" />
+              
+              <div className="relative">
+                <button onClick={() => setShowSettings(!showSettings)} className={`p-1.5 rounded transition-colors ${showSettings ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-100'}`}><Settings size={18} /></button>
+                {showSettings && (
+                  <div ref={settingsRef} className="absolute right-0 top-full mt-2 w-64 bg-white border border-gray-200 shadow-xl rounded-md z-50 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+                      <span className="font-semibold text-gray-700 text-sm">設定</span>
+                      <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
+                    </div>
+                    
+                    <div className="p-4 border-b border-gray-100">
+                      <button 
+                        onClick={() => { setShowSettings(false); setModal({ type: 'dataSource' }); }}
+                        className="w-full flex items-center px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+                      >
+                        <Database size={16} className="mr-2 opacity-80" />
+                        データソースの設定
+                      </button>
+                    </div>
 
-                  {isFreeMode ? (
-                    <span className="mr-2 p-1.5 rounded flex-shrink-0 bg-amber-50 text-amber-500"><Edit3 size={18} /></span>
-                  ) : (
-                    <span className={`mr-2 p-1.5 rounded flex-shrink-0 ${activeFile?.type === 'pdf' ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-600'}`}>
-                      {activeFile?.type === 'pdf' ? <FileText size={18} /> : activeFile?.type === 'folder' ? <Folder size={18} /> : <File size={18} />}
-                    </span>
-                  )}
-                  <h1 className="text-base font-bold text-gray-800 truncate" title={activeFile?.name}>{isFreeMode ? '自由記述' : activeFile?.name}</h1>
+                    <div className="p-4">
+                      <span className="block text-xs font-semibold text-gray-500 mb-2">レイアウト</span>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setLayout('horizontal'); setShowResult(true); }} className={`flex-1 py-1.5 text-xs font-medium rounded border flex items-center justify-center ${layout === 'horizontal' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-200 hover:bg-gray-50'}`}><PanelRight size={14} className="mr-1" />左右</button>
+                        <button onClick={() => { setLayout('vertical'); setShowResult(true); }} className={`flex-1 py-1.5 text-xs font-medium rounded border flex items-center justify-center ${layout === 'vertical' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-200 hover:bg-gray-50'}`}><PanelBottom size={14} className="mr-1" />上下</button>
+                      </div>
+                      <label className="flex items-center mt-4 cursor-pointer">
+                        <input type="checkbox" checked={autoExpand} onChange={e => setAutoExpand(e.target.checked)} className="mr-2" />
+                        <span className="text-sm text-gray-700">送信時に結果を自動展開</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button onClick={() => setShowResult(!showResult)} className={`p-1.5 rounded transition-colors ${showResult ? 'bg-blue-50 text-blue-600' : 'text-gray-400 hover:bg-gray-100'}`}>
+                {layout === 'horizontal' ? <PanelRight size={18} /> : <PanelBottom size={18} />}
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex-1 p-4 bg-gray-50 overflow-hidden select-text">
+            {(!isFreeMode && activeNode?.type === 'folder') ? (
+               <div className="h-full flex flex-col items-center justify-center bg-white border border-gray-200 rounded text-gray-400">
+                 <FolderOpen size={48} className="mb-4 text-blue-100" />
+                 <p className="text-sm">フォルダが選択されています。</p>
+               </div>
+            ) : (
+              <textarea
+                className={`w-full h-full p-4 border border-gray-200 rounded shadow-inner resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm leading-relaxed ${isFreeMode ? 'bg-amber-50/20' : 'bg-white'}`}
+                value={contents[activeId] || ''}
+                onChange={(e) => {
+                  setContents(prev => ({ ...prev, [activeId]: e.target.value }));
+                  setInnerPopup(null);
+                }}
+                placeholder="ここにテキストを入力..."
+                spellCheck={false}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* --- Resizer Right/Bottom --- */}
+        {showResult && (
+          <div 
+            className={`${layout === 'horizontal' ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize'} bg-gray-200 hover:bg-blue-400 z-10 transition-colors flex-shrink-0`}
+            onMouseDown={() => setDragType(layout === 'horizontal' ? 'right' : 'bottom')}
+          />
+        )}
+
+        {/* Result Pane */}
+        {/* ★ 修正: overflow-hidden を外枠の div に追加しました */}
+        <div 
+          className="bg-slate-50 border-gray-200 transition-[width,height] duration-200 ease-in-out flex flex-col relative overflow-hidden"
+          style={{ 
+            width: layout === 'horizontal' ? (showResult ? rightWidth : 0) : '100%',
+            height: layout === 'vertical' ? (showResult ? bottomHeight : 0) : '100%',
+            borderLeftWidth: layout === 'horizontal' && showResult ? 1 : 0,
+            borderTopWidth: layout === 'vertical' && showResult ? 1 : 0
+          }}
+        >
+          <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-slate-100 flex-shrink-0">
+            <div className="flex items-center font-bold text-sm text-slate-700">
+              <GitMerge size={16} className="mr-2 text-slate-500" />修正案
+            </div>
+            <button onClick={() => setShowResult(false)} className="p-1 text-slate-400 hover:text-slate-600"><X size={16} /></button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 relative">
+            
+            {/* Inner Popup for "No Changes" */}
+            {innerPopup && (
+              <div className="absolute top-4 left-4 right-4 bg-gray-800 text-white p-3 rounded shadow-xl flex items-center justify-between z-50">
+                <div className="flex items-center text-sm font-medium">
+                  <CheckCircle size={18} className="text-green-400 mr-2 flex-shrink-0" /> {innerPopup}
                 </div>
-                
-                <div className="flex-shrink-0 flex items-center space-x-2">
-                  
-                  {isFreeMode && (
-                    <button 
-                      onClick={() => setModal({ type: 'saveFreeText' })}
-                      className="flex items-center py-1.5 px-3 rounded font-medium text-sm text-gray-700 bg-white border border-gray-300 shadow-sm hover:bg-gray-50 transition-colors"
-                    >
-                      <Save size={16} className="mr-1.5 text-gray-500" />
-                      <span>保存</span>
-                    </button>
-                  )}
+                <button onClick={() => setInnerPopup(null)} className="text-gray-400 hover:text-white p-1"><X size={14} /></button>
+              </div>
+            )}
 
-                  <button 
-                    onClick={handleSend}
-                    disabled={isSending || (activeFile?.type === 'folder' && !isFreeMode)}
-                    className={`flex items-center py-1.5 px-3 rounded font-medium text-sm text-white shadow-sm transition-colors ${
-                      isSending || (activeFile?.type === 'folder' && !isFreeMode) ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'
-                    }`}
-                  >
-                    {isSending ? (
-                      <><Loader2 size={16} className="mr-1 animate-spin" /><span>送信中</span></>
+            {isSending ? (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                <Loader2 className="animate-spin mb-2" size={32} />
+                <span className="text-xs font-medium">分析中...</span>
+              </div>
+            ) : currentDiff.length > 0 ? (
+              <div className="space-y-4 pb-8">
+                {currentDiff.map((chunk) => (
+                  <div key={chunk.id}>
+                    {chunk.type === 'unchanged' ? (
+                      <div className="text-xs text-slate-400 font-mono pl-6 whitespace-pre-wrap">{chunk.text}</div>
                     ) : (
-                      <><Send size={16} className="mr-1" /><span>送信</span></>
-                    )}
-                  </button>
-
-                  <div className="w-px h-6 bg-gray-300"></div>
-
-                  <div className="relative" ref={settingsRef}>
-                    <button 
-                      onClick={() => setShowSettings(!showSettings)}
-                      className={`p-1.5 rounded text-gray-500 hover:bg-gray-100 transition-colors flex-shrink-0 ${showSettings ? 'bg-gray-100' : ''}`}
-                      title="設定"
-                    >
-                      <Settings size={18} />
-                    </button>
-                    {showSettings && (
-                      <div className="absolute right-0 mt-2 w-72 bg-white border border-gray-200 shadow-xl rounded-md z-50 overflow-hidden">
-                        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
-                          <span className="font-semibold text-gray-700 text-sm">表示・動作設定</span>
-                          <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
+                      <div className="bg-white border border-slate-200 rounded-md shadow-sm overflow-hidden">
+                        <div className="p-2 border-b border-slate-100 bg-slate-50 text-[10px] text-slate-500 font-bold uppercase tracking-wider flex items-center">
+                          <Info size={12} className="mr-1" /> AI Suggestion
                         </div>
-                        <div className="p-4 border-b border-gray-100">
-                          <span className="block text-xs font-semibold text-gray-500 mb-2">結果ペインのレイアウト</span>
-                          <div className="flex space-x-2">
-                            <button 
-                              onClick={() => { setLayoutMode('horizontal'); setShowResultPane(true); }}
-                              className={`flex-1 py-1.5 px-2 text-xs font-medium rounded border transition-colors flex items-center justify-center ${
-                                layoutMode === 'horizontal' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}
-                            >
-                              <PanelRight size={14} className="mr-1.5 opacity-70" /> 左右分割
-                            </button>
-                            <button 
-                              onClick={() => { setLayoutMode('vertical'); setShowResultPane(true); }}
-                              className={`flex-1 py-1.5 px-2 text-xs font-medium rounded border transition-colors flex items-center justify-center ${
-                                layoutMode === 'vertical' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}
-                            >
-                              <PanelBottom size={14} className="mr-1.5 opacity-70" /> 上下分割
-                            </button>
-                          </div>
+                        <div className="p-0 font-mono text-xs select-text">
+                          {(chunk.lines || []).map((line, idx) => (
+                            <div key={idx} className={`px-3 py-1 flex ${line.type === 'added' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                              <span className="w-5 flex-shrink-0 select-none opacity-50 font-bold">{line.type === 'added' ? '+' : '-'}</span>
+                              <span className="whitespace-pre-wrap">{line.text || ' '}</span>
+                            </div>
+                          ))}
                         </div>
-                        <div className="p-4">
-                          <label className="flex items-center space-x-3 cursor-pointer group">
-                            <input 
-                              type="checkbox" 
-                              checked={autoExpand} 
-                              onChange={(e) => setAutoExpand(e.target.checked)} 
-                              className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500" 
-                            />
-                            <span className="text-sm text-gray-700 group-hover:text-gray-900 transition-colors">
-                              送信時に結果ペインを自動展開する
-                            </span>
-                          </label>
+                        <div className="p-3 bg-blue-50/30 border-t border-blue-50 flex items-center justify-between gap-4">
+                          <span className="text-[11px] text-blue-700 leading-tight flex items-start">
+                            <MessageSquare size={12} className="mr-1.5 mt-0.5 flex-shrink-0 opacity-70" />
+                            {chunk.reason}
+                          </span>
+                          <button 
+                            disabled={chunk.applied}
+                            onClick={() => applySuggestion(chunk.id, chunk.originalText || '', chunk.suggestedText || '')}
+                            className={`px-3 py-1.5 rounded text-[11px] font-bold transition-all border flex-shrink-0 ${chunk.applied ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-default' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-600 hover:text-white shadow-sm'}`}
+                          >{chunk.applied ? '適用済み' : '変更を適用'}</button>
                         </div>
                       </div>
                     )}
                   </div>
-
-                  <button 
-                    onClick={() => setShowResultPane(!showResultPane)}
-                    className={`p-1.5 rounded transition-colors flex-shrink-0 ${showResultPane ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}
-                    title={showResultPane ? "結果ペインを閉じる" : "結果ペインを開く"}
-                  >
-                    {layoutMode === 'horizontal' ? (
-                      showResultPane ? <PanelRightClose size={18} /> : <PanelRight size={18} />
-                    ) : (
-                      showResultPane ? <PanelBottomClose size={18} /> : <PanelBottom size={18} />
-                    )}
-                  </button>
-                </div>
+                ))}
               </div>
-
-              <div className={`flex-1 flex flex-col p-4 overflow-hidden transition-colors ${isFreeMode ? 'bg-amber-50/30' : 'bg-gray-50'}`}>
-                {activeFile?.type === 'folder' && !isFreeMode ? (
-                  <div className="flex-1 flex flex-col items-center justify-center text-gray-400 bg-white border border-gray-200 rounded-sm">
-                    <FolderOpen size={48} className="mb-4 text-blue-200" />
-                    <p className="font-medium text-gray-500">フォルダが選択されています</p>
-                    <p className="text-xs mt-2 text-gray-400">ファイルを選択するか、左上のボタンから追加してください。</p>
-                  </div>
-                ) : (
-                  <div className={`flex-1 flex flex-col bg-white border shadow-inner rounded-sm overflow-hidden ${isFreeMode ? 'border-amber-200' : 'border-gray-300'}`}>
-                    <textarea
-                      value={contents[effectiveFileId] || ''}
-                      onChange={handleContentChange}
-                      className="flex-1 w-full p-4 resize-none focus:outline-none focus:ring-1 focus:ring-blue-500 text-gray-800 leading-relaxed text-sm font-mono"
-                      placeholder={isFreeMode ? "ここに自由にテキストを入力してください。" : "ファイルの内容をここで編集できます。"}
-                      spellCheck="false"
-                    />
-                  </div>
-                )}
-                {!isFreeMode && activeFile?.type === 'pdf' && (
-                  <div className="mt-2 text-xs text-gray-500 flex items-center">
-                    <AlertCircle size={14} className="mr-1 flex-shrink-0" />
-                    <span className="truncate">PDFテキスト抽出モード（編集内容は送信時に反映されます）</span>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
-              <File size={48} className="mb-4 opacity-50" />
-              <p>ファイルを選択してください</p>
-            </div>
-          )}
-        </div>
-
-        {/* --- 結果ペイン リサイザー --- */}
-        {showResultPane && layoutMode === 'horizontal' && (
-          <div 
-            className={`w-1 flex-shrink-0 cursor-col-resize z-20 transition-colors duration-150 ${isDraggingRight ? 'bg-blue-500' : 'bg-gray-300 hover:bg-blue-400'}`}
-            onMouseDown={startResizingRight}
-          />
-        )}
-        {showResultPane && layoutMode === 'vertical' && (
-          <div 
-            className={`h-1 flex-shrink-0 cursor-row-resize z-20 transition-colors duration-150 ${isDraggingBottom ? 'bg-blue-500' : 'bg-gray-300 hover:bg-blue-400'}`}
-            onMouseDown={startResizingBottom}
-          />
-        )}
-
-        {/* === 結果（レスポンス）ペイン === */}
-        <div 
-          className={`flex-shrink-0 bg-slate-50 flex flex-col z-10 shadow-sm overflow-hidden border-gray-300
-            ${layoutMode === 'vertical' ? 'border-t' : ''}
-            ${(!isDraggingLeft && !isDraggingRight && !isDraggingBottom) ? 'transition-[width,height] duration-300 ease-in-out' : ''}
-          `}
-          style={ layoutMode === 'horizontal' ? { width: showResultPane ? rightPaneWidth : 0 } : { height: showResultPane ? bottomPaneHeight : 0 } }
-        >
-          <div 
-            className="flex flex-col relative h-full" 
-            style={ layoutMode === 'horizontal' 
-              ? { width: rightPaneWidth, minWidth: rightPaneWidth, height: '100%' } 
-              : { height: bottomPaneHeight, minHeight: bottomPaneHeight, width: '100%' } 
-            }
-          >
-            {/* ★ 右ペイン内専用のポップアップ（差分がない場合に表示） */}
-            {innerPopupMessage && (
-              <div className="absolute top-14 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-3 rounded shadow-lg z-50 flex items-center animate-fade-in w-11/12 max-w-sm">
-                <CheckCircle size={20} className="text-green-400 mr-3 flex-shrink-0" />
-                <span className="font-medium text-sm flex-1">{innerPopupMessage}</span>
-                <button onClick={() => setInnerPopupMessage(null)} className="ml-3 text-gray-400 hover:text-white flex-shrink-0">
-                  <X size={16} />
-                </button>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-slate-300 text-center px-4">
+                <GitMerge size={40} className="mb-3 opacity-20" />
+                <p className="text-xs leading-relaxed font-medium">送信ボタンを押すと結果が表示されます</p>
               </div>
             )}
+          </div>
+        </div>
+      </div>
 
-            <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-slate-100 flex-shrink-0">
-              <div className="flex items-center">
-                <GitMerge className="mr-2 text-slate-600" size={16} />
-                <h2 className="font-semibold text-slate-700 text-sm">システムからの修正提案</h2>
-              </div>
-              <button onClick={() => setShowResultPane(false)} className="text-gray-400 hover:text-gray-600">
-                <X size={16} />
-              </button>
+      {/* --- Global Modals --- */}
+      {modal.type !== 'none' && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-[1px] z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-white">
+              <span className="font-bold text-gray-700 flex items-center">
+                {modal.type === 'createFolder' && <><FolderPlus size={18} className="mr-2 text-blue-500" />フォルダ追加</>}
+                {modal.type === 'deleteConfirm' && <><AlertCircle size={18} className="mr-2 text-red-500" />削除の確認</>}
+                {modal.type === 'saveFreeText' && <><Save size={18} className="mr-2 text-amber-500" />ファイルとして保存</>}
+                {modal.type === 'dataSource' && <><Database size={18} className="mr-2 text-blue-500" />データソースの設定</>}
+              </span>
+              <button onClick={() => setModal({ type: 'none' })} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+            </div>
+            
+            <div className="p-6 bg-white">
+              {modal.type === 'createFolder' && (
+                <input 
+                  autoFocus placeholder="フォルダ名を入力"
+                  className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(e.currentTarget.value); }}
+                />
+              )}
+              {modal.type === 'deleteConfirm' && (
+                <p className="text-sm text-gray-600">「{modal.name}」を削除しますか？<br/><span className="text-red-500 text-xs mt-2 block">※この操作は元に戻せません。</span></p>
+              )}
+              {modal.type === 'saveFreeText' && (
+                <div className="space-y-4">
+                  <input id="save-name" placeholder="ファイル名 (例: memo.txt)" className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500" defaultValue="memo.txt" />
+                  <select id="save-folder" className="w-full p-2 border rounded text-sm outline-none bg-white">
+                    <option value="">(ルートディレクトリ)</option>
+                    {getFolderOptions(files).map(opt => <option key={opt.id} value={opt.id}>{opt.name}</option>)}
+                  </select>
+                </div>
+              )}
+              {/* ★ データソース設定モーダル */}
+              {modal.type === 'dataSource' && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-bold text-gray-500">対象フォルダを選択</label>
+                    <div className="flex gap-2">
+                      <input type="text" readOnly value={dsPath} placeholder="フォルダが選択されていません" className="flex-1 p-2 border rounded text-sm bg-gray-50 text-gray-600 outline-none" />
+                      <button onClick={() => dirInputRef.current?.click()} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border rounded text-sm font-medium transition-colors">参照...</button>
+                    </div>
+                    {/* webkitdirectory を利用してフォルダ選択ダイアログを起動 */}
+                    <input type="file" ref={dirInputRef} className="hidden" onChange={handleDataSourceSelect} {...{"webkitdirectory": "", "directory": ""}} />
+                  </div>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-bold text-gray-500">プレビュー</label>
+                    <div className="border border-gray-200 rounded h-48 overflow-y-auto bg-gray-50 py-2">
+                      {dsNodes.length > 0 ? (
+                        <FileTreeView nodes={dsNodes} readOnly={true} onToggle={handleDsToggle} />
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400 p-4 text-center">
+                          参照ボタンからフォルダを選択すると<br/>ここに階層が表示されます。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4">
-              {isSending ? (
-                <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                  <Loader2 size={32} className="animate-spin mb-4 text-blue-500" />
-                  <p className="text-sm font-medium">テキストを分析し、修正案を作成中...</p>
-                </div>
-              ) : currentDiff && currentDiff.length > 0 ? (
-                <div className="font-mono text-sm leading-relaxed pb-10">
-                  {currentDiff.map((chunk, chunkIdx) => {
-                    if (chunk.type === 'unchanged') {
-                      return (
-                        <div key={chunkIdx} className="px-3 py-0.5 text-slate-400 opacity-70 whitespace-pre-wrap break-all">
-                          <span className="inline-block w-4 mr-2"></span>{chunk.text}
-                        </div>
-                      );
-                    } else {
-                      return (
-                        <div key={chunkIdx} className="my-4 bg-white border border-slate-200 rounded-md overflow-hidden shadow-sm">
-                          <div className="py-1">
-                            {/* 安全ガード: chunk.lines がなくても空配列として処理 */}
-                            {(chunk.lines || []).map((line, lineIdx) => (
-                              <div 
-                                key={lineIdx} 
-                                className={`px-3 py-1 flex whitespace-pre-wrap break-all ${
-                                  line.type === 'added' ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'
-                                }`}
-                              >
-                                <span className={`select-none w-4 flex-shrink-0 font-bold ${
-                                  line.type === 'added' ? 'text-green-500' : 'text-red-500'
-                                }`}>
-                                  {line.type === 'added' ? '+' : '-'}
-                                </span>
-                                <span>{line.text || ' '}</span>
-                              </div>
-                            ))}
-                          </div>
-                          
-                          <div className="bg-blue-50/60 border-t border-blue-100 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                            <div className="flex items-start text-xs text-blue-800">
-                              <MessageSquare size={14} className="mr-2 mt-0.5 flex-shrink-0 text-blue-500" />
-                              <span className="leading-snug">{chunk.reason}</span>
-                            </div>
-                            
-                            <button 
-                              onClick={() => handleApplySuggestion(chunk.id, chunk.originalText, chunk.suggestedText)}
-                              disabled={chunk.applied}
-                              className={`flex-shrink-0 inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium rounded transition-colors border shadow-sm ${
-                                chunk.applied 
-                                  ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed shadow-none' 
-                                  : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 active:bg-blue-100'
-                              }`}
-                            >
-                              {chunk.applied ? (
-                                <><Check size={14} className="mr-1" /> 適用済み</>
-                              ) : (
-                                <><CheckCircle size={14} className="mr-1" /> 修正を適用</>
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      );
+            <div className="p-4 bg-gray-50 flex justify-end gap-2 border-t border-gray-100">
+              <button onClick={() => setModal({ type: 'none' })} className="px-4 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded transition-colors">
+                キャンセル
+              </button>
+
+              {/* ★ 反映ボタン */}
+              {modal.type === 'dataSource' && (
+                <button 
+                  disabled={dsNodes.length === 0 || isLoadingTree}
+                  onClick={async () => {
+                    setIsLoadingTree(true);
+                    try {
+                      await backendAPI.setNewDatasource(dsPath);
+                      setFiles(dsNodes);
+                      setSelectedId('');
+                      setIsFreeMode(false); 
+                      
+                      setModal({ type: 'none' });
+                      showToast("データソースを反映しました");
+                    } catch (e) {
+                      showToast("データソースの反映に失敗しました", "error");
+                    } finally {
+                      setIsLoadingTree(false);
                     }
-                  })}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full text-slate-400 mt-6">
-                  <p className="text-sm text-center px-4 leading-relaxed whitespace-pre-wrap">
-                    {currentDiff && currentDiff.length === 0 
-                      ? "現在のテキストに変更提案はありませんでした。\n（フォーマットは適切です）"
-                      : "「送信」ボタンを押すと、\nシステムからの修正案がここに表示され、\nクリックで元文へ反映できます。"}
-                  </p>
-                </div>
+                  }}
+                  className="px-4 py-1.5 text-sm text-white rounded font-bold transition-colors bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >反映</button>
+              )}
+
+              {modal.type !== 'dataSource' && (
+                <button 
+                  onClick={() => {
+                    if (modal.type === 'deleteConfirm') handleDelete(modal.id, modal.name);
+                    if (modal.type === 'saveFreeText') {
+                      const name = (document.getElementById('save-name') as HTMLInputElement).value;
+                      const fId = (document.getElementById('save-folder') as HTMLSelectElement).value;
+                      handleSaveFreeText(name, fId || null);
+                    }
+                  }}
+                  className={`px-4 py-1.5 text-sm text-white rounded font-bold transition-colors ${modal.type === 'deleteConfirm' ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >実行</button>
               )}
             </div>
           </div>
         </div>
+      )}
 
-      </div>
-
+      {/* --- Toast --- */}
       {toast && (
-        <div className="fixed bottom-6 right-6 flex items-center bg-gray-800 text-white px-4 py-3 rounded shadow-lg z-50 animate-fade-in">
-          <CheckCircle size={20} className="text-green-400 mr-3" />
-          <span className="font-medium text-sm">{toast.message}</span>
+        <div className="fixed bottom-6 right-6 flex items-center bg-gray-800 text-white px-4 py-3 rounded-lg shadow-2xl z-[110] animate-in slide-in-from-bottom-4">
+          <CheckCircle size={18} className="text-green-400 mr-3" />
+          <span className="text-sm font-medium">{toast.message}</span>
         </div>
       )}
     </div>
   );
 }
-
-
