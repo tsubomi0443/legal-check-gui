@@ -85,7 +85,7 @@ const initialFiles: FileNode[] = [
 const initialContents: Record<string, string> = {
   'file-1': '【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員',
   'file-2': '2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。',
-  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【リサイズ不具合の修正】\n・リサイズ時の「幅の上限」が厳しすぎたため、ドラッグできなくなる現象を修正しました。\n・左右のペイン、および上下レイアウト時のリサイズが画面端まで自由に行えるようになっています。',
+  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【修正内容】\n・元の安定したコードをベースに復旧しました。\n・Wails環境の通信エラーや、幅の調整、修正がない場合などの不具合を局所的に解決しています。',
   'free-mode': 'ここは自由記述モードです。\n\n自由にテキストを入力し、「保存」ボタンを押すと、ツリー内の指定したフォルダにテキストファイルとして保存できます。'
 };
 
@@ -108,27 +108,28 @@ const simulateReview = (text: string): string => {
 };
 
 // ============================================================================
-// Wails バックエンドAPI Wrapper
+// Wails バックエンドAPI Wrapper (安全な呼び出し)
 // ============================================================================
 const backendAPI = {
   createFolder: async (parentId: string | null, name: string): Promise<string> => {
-    if (window.go) return await window.go.main.App.CreateFolder(parentId, name);
+    // 最小限のガード: メソッドが存在する場合のみGoを呼び出し、それ以外はモック処理へ
+    if (window.go?.main?.App?.CreateFolder) return await window.go.main.App.CreateFolder(parentId, name);
     return new Promise(resolve => setTimeout(() => resolve(`folder-${Date.now()}`), 200));
   },
   deleteItem: async (id: string): Promise<boolean> => {
-    if (window.go) return await window.go.main.App.DeleteNode(id);
+    if (window.go?.main?.App?.DeleteNode) return await window.go.main.App.DeleteNode(id);
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
   moveItem: async (itemId: string, targetFolderId: string | null): Promise<boolean> => {
-    if (window.go) return await window.go.main.App.MoveNode(itemId, targetFolderId);
+    if (window.go?.main?.App?.MoveNode) return await window.go.main.App.MoveNode(itemId, targetFolderId);
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
   uploadFile: async (name: string, content: string, parentId: string | null): Promise<string> => {
-    if (window.go) return await window.go.main.App.SaveFile(name, content, parentId);
+    if (window.go?.main?.App?.SaveFile) return await window.go.main.App.SaveFile(name, content, parentId);
     return new Promise(resolve => setTimeout(() => resolve(`file-${Date.now()}`), 200));
   },
   analyzeText: async (text: string): Promise<string> => {
-    if (window.go) return await window.go.main.App.AnalyzeText(text);
+    if (window.go?.main?.App?.AnalyzeText) return await window.go.main.App.AnalyzeText(text);
     return new Promise(resolve => setTimeout(() => resolve(simulateReview(text)), 800));
   }
 };
@@ -272,7 +273,9 @@ export default function App() {
   const [diffResults, setDiffResults] = useState<Record<string, DiffChunk[] | null>>({});
   const [toast, setToast] = useState<ToastType | null>(null);
   
+  // ★ 右ペイン専用のポップアップメッセージ状態
   const [innerPopupMessage, setInnerPopupMessage] = useState<string | null>(null);
+  
   const [modal, setModal] = useState<ModalState>({ type: 'none' });
   const [isFreeMode, setIsFreeMode] = useState<boolean>(false);
 
@@ -340,7 +343,8 @@ export default function App() {
   const confirmCreateFolder = async (folderName: string) => {
     folderName = folderName.trim();
     if (!folderName || modal.type !== 'createFolder') {
-      setModal({ type: 'none' }); return;
+      setModal({ type: 'none' });
+      return;
     }
     const targetParentId = modal.targetParentId;
     setModal({ type: 'none' });
@@ -413,18 +417,24 @@ export default function App() {
 
   const confirmSaveFreeText = async (fileName: string, folderId: string | null) => {
     fileName = fileName.trim();
-    if (!fileName) { showToast('ファイル名を入力してください', 'error'); return; }
+    if (!fileName) {
+      showToast('ファイル名を入力してください', 'error');
+      return;
+    }
     if (!fileName.includes('.')) fileName += '.txt';
 
     setModal({ type: 'none' });
     setIsLoadingTree(true);
+
     const content = contents['free-mode'] || '';
 
     try {
       const newId = await backendAPI.uploadFile(fileName, content, folderId);
       const newFileNode: FileNode = { id: newId, name: fileName, type: 'txt' };
+      
       setFiles(prev => insertNodeToParent(prev, folderId, newFileNode));
       setContents(prev => ({ ...prev, [newId]: content }));
+      
       setIsFreeMode(false);
       setSelectedFileId(newId);
       showToast(`「${fileName}」を保存しました`);
@@ -436,7 +446,7 @@ export default function App() {
   };
 
   // ============================================================================
-  // Wails連携：送信（AI分析）処理
+  // 送信（AI分析）処理
   // ============================================================================
   const handleSend = async () => {
     if (!effectiveFileId) return;
@@ -447,10 +457,10 @@ export default function App() {
       const currentText = contents[effectiveFileId] || '';
       const suggestedText = await backendAPI.analyzeText(currentText); 
       
-      // 修正がない場合はDiff計算を完全にスキップ
       if (currentText === suggestedText) {
+        // ★ 修正案がない場合は差分計算をせずにポップアップ表示
         setDiffResults(prev => ({ ...prev, [effectiveFileId]: [] }));
-        setInnerPopupMessage('文章に変更提案はありませんでした。');
+        setInnerPopupMessage('修正の必要はありませんでした。');
         if (autoExpand) setShowResultPane(true);
       } else {
         const rawDiff = calculateDiff(currentText, suggestedText);
@@ -460,7 +470,7 @@ export default function App() {
         showToast('修正案を受信しました', 'success');
       }
     } catch (e) {
-      showToast('バックエンド通信エラー', 'error');
+      showToast('バックエンド通信エラーが発生しました', 'error');
     } finally {
       setIsSending(false);
     }
@@ -490,7 +500,6 @@ export default function App() {
     if (currentParentId === targetFolderId) return;
     const draggedNode = findNode(files, draggedId);
     if (!draggedNode) return;
-    
     setIsLoadingTree(true);
     try {
       await backendAPI.moveItem(draggedId, targetFolderId);
@@ -541,7 +550,7 @@ export default function App() {
   };
 
   // ============================================================================
-  // ★ リサイズ処理 (上限を緩和し、画面端までドラッグ可能に修正)
+  // リサイズ処理 (独立した元の構造 ＋ 上限・下限の安全な微調整)
   // ============================================================================
   const startResizingLeft = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -549,8 +558,8 @@ export default function App() {
     const startX = e.clientX;
     const startWidth = leftPaneWidth;
     const onMouseMove = (moveEvent: MouseEvent) => {
-      // 上限を innerWidth * 0.4 から innerWidth - 300 に緩和
-      setLeftPaneWidth(Math.max(180, Math.min(window.innerWidth - 300, startWidth + moveEvent.clientX - startX)));
+      // ★ 左ペインが大きくなりすぎないよう、最大幅を 400px に固定
+      setLeftPaneWidth(Math.max(180, Math.min(400, startWidth + moveEvent.clientX - startX)));
     };
     const onMouseUp = () => {
       setIsDraggingLeft(false);
@@ -567,8 +576,8 @@ export default function App() {
     const startX = e.clientX;
     const startWidth = rightPaneWidth;
     const onMouseMove = (moveEvent: MouseEvent) => {
-      // 上限を innerWidth * 0.5 から innerWidth - 300 に緩和
-      setRightPaneWidth(Math.max(250, Math.min(window.innerWidth - 300, startWidth - (moveEvent.clientX - startX))));
+      // ★ 右ペインのドラッグが効かなくなるのを防ぐため、最大幅を window.innerWidth - 200 に緩和
+      setRightPaneWidth(Math.max(250, Math.min(window.innerWidth - 200, startWidth - (moveEvent.clientX - startX))));
     };
     const onMouseUp = () => {
       setIsDraggingRight(false);
@@ -585,8 +594,8 @@ export default function App() {
     const startY = e.clientY;
     const startHeight = bottomPaneHeight;
     const onMouseMove = (moveEvent: MouseEvent) => {
-      // 上限を innerHeight * 0.7 から innerHeight - 200 に緩和
-      setBottomPaneHeight(Math.max(150, Math.min(window.innerHeight - 200, startHeight - (moveEvent.clientY - startY))));
+      // ★ 下ペインの上限を緩和
+      setBottomPaneHeight(Math.max(150, Math.min(window.innerHeight - 150, startHeight - (moveEvent.clientY - startY))));
     };
     const onMouseUp = () => {
       setIsDraggingBottom(false);
@@ -1079,6 +1088,7 @@ export default function App() {
                       return (
                         <div key={chunkIdx} className="my-4 bg-white border border-slate-200 rounded-md overflow-hidden shadow-sm">
                           <div className="py-1">
+                            {/* 安全ガード: chunk.lines がなくても空配列として処理 */}
                             {(chunk.lines || []).map((line, lineIdx) => (
                               <div 
                                 key={lineIdx} 
