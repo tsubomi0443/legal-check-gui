@@ -1,10 +1,29 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Folder, FolderOpen, FileText, File, Send, Upload, ChevronRight, ChevronDown,
-  CheckCircle, Loader2, AlertCircle, GitMerge, MessageSquare, FileCheck,
+  CheckCircle, Loader2, AlertCircle, GitMerge, MessageSquare,
   PanelRightClose, PanelRight, PanelBottomClose, PanelBottom, PanelLeftClose, PanelLeft,
   Settings, X, Check, Edit3, FolderPlus, Trash2, Save
 } from 'lucide-react';
+
+// ============================================================================
+// Wails (Go) バックエンド連携用の型定義
+// ============================================================================
+declare global {
+  interface Window {
+    go?: {
+      main: {
+        App: {
+          CreateFolder(parentId: string | null, name: string): Promise<string>;
+          DeleteNode(id: string): Promise<boolean>;
+          MoveNode(itemId: string, targetFolderId: string | null): Promise<boolean>;
+          SaveFile(name: string, content: string, parentId: string | null): Promise<string>;
+          AnalyzeText(text: string): Promise<string>;
+        }
+      }
+    }
+  }
+}
 
 // --- 型定義 ---
 type FileType = 'folder' | 'pdf' | 'txt' | 'csv' | 'md';
@@ -66,25 +85,51 @@ const initialFiles: FileNode[] = [
 const initialContents: Record<string, string> = {
   'file-1': '【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員',
   'file-2': '2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。',
-  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【更新内容】\n・自由記述モードに「保存機能」を追加しました。\n・自由記述モードで上部の「保存」ボタンを押すと、保存先のフォルダを選択してファイルとして書き出すことができます。',
+  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【リサイズ不具合の修正】\n・リサイズ時の「幅の上限」が厳しすぎたため、ドラッグできなくなる現象を修正しました。\n・左右のペイン、および上下レイアウト時のリサイズが画面端まで自由に行えるようになっています。',
   'free-mode': 'ここは自由記述モードです。\n\n自由にテキストを入力し、「保存」ボタンを押すと、ツリー内の指定したフォルダにテキストファイルとして保存できます。'
 };
 
+// --- AIモック (プレビュー環境用) ---
+const simulateReview = (text: string): string => {
+  let newText = text;
+  const replacements = [
+    { target: '目的とする。', replacement: '目的としています。' },
+    { target: '全社員', replacement: '全従業員（契約社員・アルバイト含む）' },
+    { target: '協議', replacement: 'ディスカッション' }
+  ];
+  
+  replacements.forEach(({target, replacement}) => {
+    if (newText.includes(target)) {
+      newText = newText.replace(target, replacement);
+    }
+  });
+  
+  return newText; 
+};
+
 // ============================================================================
-// Wails バックエンドAPI呼び出しのモック
+// Wails バックエンドAPI Wrapper
 // ============================================================================
 const backendAPI = {
   createFolder: async (parentId: string | null, name: string): Promise<string> => {
+    if (window.go) return await window.go.main.App.CreateFolder(parentId, name);
     return new Promise(resolve => setTimeout(() => resolve(`folder-${Date.now()}`), 200));
   },
   deleteItem: async (id: string): Promise<boolean> => {
+    if (window.go) return await window.go.main.App.DeleteNode(id);
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
   moveItem: async (itemId: string, targetFolderId: string | null): Promise<boolean> => {
+    if (window.go) return await window.go.main.App.MoveNode(itemId, targetFolderId);
     return new Promise(resolve => setTimeout(() => resolve(true), 200));
   },
   uploadFile: async (name: string, content: string, parentId: string | null): Promise<string> => {
+    if (window.go) return await window.go.main.App.SaveFile(name, content, parentId);
     return new Promise(resolve => setTimeout(() => resolve(`file-${Date.now()}`), 200));
+  },
+  analyzeText: async (text: string): Promise<string> => {
+    if (window.go) return await window.go.main.App.AnalyzeText(text);
+    return new Promise(resolve => setTimeout(() => resolve(simulateReview(text)), 800));
   }
 };
 
@@ -143,7 +188,6 @@ const isDescendant = (nodes: FileNode[], parentId: string, childId: string): boo
   return findNode(parent.children, childId) !== null;
 };
 
-// 保存先フォルダ一覧をフラットに取得する関数
 const getFolderOptions = (nodes: FileNode[], prefix: string = ''): FolderOption[] => {
   let options: FolderOption[] = [];
   nodes.forEach(node => {
@@ -157,28 +201,7 @@ const getFolderOptions = (nodes: FileNode[], prefix: string = ''): FolderOption[
   return options;
 };
 
-// --- AIモックとDiff ---
-const simulateReview = (text: string): string => {
-  let newText = text;
-  const replacements = [
-    { target: '目的とする。', replacement: '目的としています。' },
-    { target: '全社員', replacement: '全従業員（契約社員・アルバイト含む）' },
-    { target: '協議', replacement: 'ディスカッション' }
-  ];
-  let changedCount = 0;
-  replacements.forEach(({target, replacement}) => {
-    if (newText.includes(target)) {
-      newText = newText.replace(target, replacement);
-      changedCount++;
-    }
-  });
-  if (changedCount === 0) {
-    if (newText.trim().length > 0) newText += '\n\n【システム追記】文章のフォーマットは適切です。';
-    else newText = '【システム追記】テキストが空です。内容を記述してください。';
-  }
-  return newText;
-};
-
+// --- Diff計算処理 ---
 const calculateDiff = (oldStr: string, newStr: string): DiffLine[] => {
   const oldLines = oldStr.split('\n');
   const newLines = newStr.split('\n');
@@ -211,11 +234,13 @@ const generateDiffChunks = (diffResult: DiffLine[]): DiffChunk[] => {
   const chunks: DiffChunk[] = [];
   let currentDiffLines: DiffLine[] = [];
   const reasons = ["表現をより明確にしました。", "より丁寧な語彙に置き換えました。"];
+  
   const flushDiff = () => {
     if (currentDiffLines.length > 0) {
       chunks.push({ 
         id: `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        type: 'diff', lines: currentDiffLines,
+        type: 'diff', 
+        lines: currentDiffLines,
         reason: reasons[Math.floor(Math.random() * reasons.length)],
         originalText: currentDiffLines.filter(l => l.type === 'removed').map(l => l.text).join('\n'),
         suggestedText: currentDiffLines.filter(l => l.type === 'added').map(l => l.text).join('\n'),
@@ -224,6 +249,7 @@ const generateDiffChunks = (diffResult: DiffLine[]): DiffChunk[] => {
       currentDiffLines = [];
     }
   };
+  
   diffResult.forEach(line => {
     if (line.type === 'unchanged') {
       flushDiff();
@@ -246,6 +272,7 @@ export default function App() {
   const [diffResults, setDiffResults] = useState<Record<string, DiffChunk[] | null>>({});
   const [toast, setToast] = useState<ToastType | null>(null);
   
+  const [innerPopupMessage, setInnerPopupMessage] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ type: 'none' });
   const [isFreeMode, setIsFreeMode] = useState<boolean>(false);
 
@@ -281,13 +308,12 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // モーダル表示時のフォーカス
   useEffect(() => {
     if (modal.type === 'createFolder' && newFolderInputRef.current) {
       newFolderInputRef.current.focus();
     } else if (modal.type === 'saveFreeText' && saveFileInputRef.current) {
       saveFileInputRef.current.focus();
-      saveFileInputRef.current.select(); // ファイル名を全選択
+      saveFileInputRef.current.select();
     }
   }, [modal.type]);
 
@@ -314,8 +340,7 @@ export default function App() {
   const confirmCreateFolder = async (folderName: string) => {
     folderName = folderName.trim();
     if (!folderName || modal.type !== 'createFolder') {
-      setModal({ type: 'none' });
-      return;
+      setModal({ type: 'none' }); return;
     }
     const targetParentId = modal.targetParentId;
     setModal({ type: 'none' });
@@ -386,29 +411,20 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // --- 自由記述の保存処理 ---
   const confirmSaveFreeText = async (fileName: string, folderId: string | null) => {
     fileName = fileName.trim();
-    if (!fileName) {
-      showToast('ファイル名を入力してください', 'error');
-      return;
-    }
-    // 拡張子がなければ .txt を付与
+    if (!fileName) { showToast('ファイル名を入力してください', 'error'); return; }
     if (!fileName.includes('.')) fileName += '.txt';
 
     setModal({ type: 'none' });
     setIsLoadingTree(true);
-
     const content = contents['free-mode'] || '';
 
     try {
       const newId = await backendAPI.uploadFile(fileName, content, folderId);
       const newFileNode: FileNode = { id: newId, name: fileName, type: 'txt' };
-      
       setFiles(prev => insertNodeToParent(prev, folderId, newFileNode));
       setContents(prev => ({ ...prev, [newId]: content }));
-      
-      // 保存したらファイルモードに切り替えてそのファイルを選択状態にする
       setIsFreeMode(false);
       setSelectedFileId(newId);
       showToast(`「${fileName}」を保存しました`);
@@ -420,11 +436,41 @@ export default function App() {
   };
 
   // ============================================================================
+  // Wails連携：送信（AI分析）処理
+  // ============================================================================
+  const handleSend = async () => {
+    if (!effectiveFileId) return;
+    setIsSending(true);
+    setInnerPopupMessage(null); 
+    
+    try {
+      const currentText = contents[effectiveFileId] || '';
+      const suggestedText = await backendAPI.analyzeText(currentText); 
+      
+      // 修正がない場合はDiff計算を完全にスキップ
+      if (currentText === suggestedText) {
+        setDiffResults(prev => ({ ...prev, [effectiveFileId]: [] }));
+        setInnerPopupMessage('文章に変更提案はありませんでした。');
+        if (autoExpand) setShowResultPane(true);
+      } else {
+        const rawDiff = calculateDiff(currentText, suggestedText);
+        const chunks = generateDiffChunks(rawDiff);
+        setDiffResults(prev => ({ ...prev, [effectiveFileId]: chunks }));
+        if (autoExpand) setShowResultPane(true);
+        showToast('修正案を受信しました', 'success');
+      }
+    } catch (e) {
+      showToast('バックエンド通信エラー', 'error');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // ============================================================================
   // ドラッグ＆ドロップ処理
   // ============================================================================
   const handleDragStart = (e: React.DragEvent, id: string) => {
-    e.dataTransfer.setData('application/x-file-id', id);
-    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-file-id', id); e.dataTransfer.effectAllowed = 'move';
   };
   const handleDragOver = (e: React.DragEvent, targetId: string | null) => {
     e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move';
@@ -444,6 +490,7 @@ export default function App() {
     if (currentParentId === targetFolderId) return;
     const draggedNode = findNode(files, draggedId);
     if (!draggedNode) return;
+    
     setIsLoadingTree(true);
     try {
       await backendAPI.moveItem(draggedId, targetFolderId);
@@ -475,22 +522,7 @@ export default function App() {
     setContents({ ...contents, [effectiveFileId]: e.target.value });
     setDiffResults(prev => ({ ...prev, [effectiveFileId]: null }));
     setShowResultPane(false);
-  };
-
-  const handleSend = () => {
-    if (!effectiveFileId) return;
-    setIsSending(true);
-    setTimeout(() => {
-      const currentText = contents[effectiveFileId] || '';
-      const suggestedText = simulateReview(currentText); 
-      const rawDiff = calculateDiff(currentText, suggestedText);
-      const chunks = generateDiffChunks(rawDiff);
-      
-      setDiffResults(prev => ({ ...prev, [effectiveFileId]: chunks }));
-      setIsSending(false);
-      if (autoExpand) setShowResultPane(true);
-      showToast('修正案を受信しました', 'success');
-    }, 1500);
+    setInnerPopupMessage(null); 
   };
 
   const handleApplySuggestion = (chunkId?: string, originalText?: string, suggestedText?: string) => {
@@ -508,22 +540,61 @@ export default function App() {
     showToast('提案内容を元文へ適用しました', 'success');
   };
 
-  // --- リサイズ ---
-  const makeResizeHandler = (setter: React.Dispatch<React.SetStateAction<number>>, isX: boolean, min: number, maxRatio: number, reverse: boolean = false) => (e: React.MouseEvent) => {
+  // ============================================================================
+  // ★ リサイズ処理 (上限を緩和し、画面端までドラッグ可能に修正)
+  // ============================================================================
+  const startResizingLeft = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const startVal = isX ? e.clientX : e.clientY;
-    const startSize = isX ? (reverse ? rightPaneWidth : leftPaneWidth) : bottomPaneHeight;
-    const max = (isX ? window.innerWidth : window.innerHeight) * maxRatio;
-    const onMove = (moveEvent: MouseEvent) => {
-      const diff = (isX ? moveEvent.clientX : moveEvent.clientY) - startVal;
-      setter(Math.max(min, Math.min(max, startSize + (reverse ? -diff : diff))));
+    setIsDraggingLeft(true);
+    const startX = e.clientX;
+    const startWidth = leftPaneWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      // 上限を innerWidth * 0.4 から innerWidth - 300 に緩和
+      setLeftPaneWidth(Math.max(180, Math.min(window.innerWidth - 300, startWidth + moveEvent.clientX - startX)));
     };
-    const onUp = () => {
-      setIsDraggingLeft(false); setIsDraggingRight(false); setIsDraggingBottom(false);
-      document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+    const onMouseUp = () => {
+      setIsDraggingLeft(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
     };
-    if(isX && !reverse) setIsDraggingLeft(true); else if(isX) setIsDraggingRight(true); else setIsDraggingBottom(true);
-    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const startResizingRight = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDraggingRight(true);
+    const startX = e.clientX;
+    const startWidth = rightPaneWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      // 上限を innerWidth * 0.5 から innerWidth - 300 に緩和
+      setRightPaneWidth(Math.max(250, Math.min(window.innerWidth - 300, startWidth - (moveEvent.clientX - startX))));
+    };
+    const onMouseUp = () => {
+      setIsDraggingRight(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const startResizingBottom = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDraggingBottom(true);
+    const startY = e.clientY;
+    const startHeight = bottomPaneHeight;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      // 上限を innerHeight * 0.7 から innerHeight - 200 に緩和
+      setBottomPaneHeight(Math.max(150, Math.min(window.innerHeight - 200, startHeight - (moveEvent.clientY - startY))));
+    };
+    const onMouseUp = () => {
+      setIsDraggingBottom(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
   };
 
   const renderTree = (nodes: FileNode[], depth: number = 0): React.ReactNode => {
@@ -604,7 +675,7 @@ export default function App() {
         isDraggingBottom ? 'select-none cursor-row-resize' : ''
       }`}
     >
-      {/* === モーダル領域 === */}
+      {/* === 全体モーダル領域 === */}
       {modal.type !== 'none' && (
         <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-4">
           
@@ -775,10 +846,11 @@ export default function App() {
         </div>
       </div>
 
+      {/* --- 左ペイン リサイザー --- */}
       {showLeftPane && (
         <div 
           className={`w-1 flex-shrink-0 cursor-col-resize z-20 transition-colors duration-150 ${isDraggingLeft ? 'bg-blue-500' : 'bg-gray-300 hover:bg-blue-400'}`}
-          onMouseDown={makeResizeHandler(setLeftPaneWidth, true, 180, 0.4)}
+          onMouseDown={startResizingLeft}
         />
       )}
 
@@ -812,7 +884,6 @@ export default function App() {
                 
                 <div className="flex-shrink-0 flex items-center space-x-2">
                   
-                  {/* === 保存ボタン (自由記述モード時のみ表示) === */}
                   {isFreeMode && (
                     <button 
                       onClick={() => setModal({ type: 'saveFreeText' })}
@@ -962,12 +1033,23 @@ export default function App() {
           style={ layoutMode === 'horizontal' ? { width: showResultPane ? rightPaneWidth : 0 } : { height: showResultPane ? bottomPaneHeight : 0 } }
         >
           <div 
-            className="flex flex-col" 
+            className="flex flex-col relative h-full" 
             style={ layoutMode === 'horizontal' 
               ? { width: rightPaneWidth, minWidth: rightPaneWidth, height: '100%' } 
               : { height: bottomPaneHeight, minHeight: bottomPaneHeight, width: '100%' } 
             }
           >
+            {/* ★ 右ペイン内専用のポップアップ（差分がない場合に表示） */}
+            {innerPopupMessage && (
+              <div className="absolute top-14 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-3 rounded shadow-lg z-50 flex items-center animate-fade-in w-11/12 max-w-sm">
+                <CheckCircle size={20} className="text-green-400 mr-3 flex-shrink-0" />
+                <span className="font-medium text-sm flex-1">{innerPopupMessage}</span>
+                <button onClick={() => setInnerPopupMessage(null)} className="ml-3 text-gray-400 hover:text-white flex-shrink-0">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+
             <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-slate-100 flex-shrink-0">
               <div className="flex items-center">
                 <GitMerge className="mr-2 text-slate-600" size={16} />
@@ -984,76 +1066,69 @@ export default function App() {
                   <Loader2 size={32} className="animate-spin mb-4 text-blue-500" />
                   <p className="text-sm font-medium">テキストを分析し、修正案を作成中...</p>
                 </div>
-              ) : currentDiff ? (
-                currentDiff.every(c => c.type === 'unchanged') ? (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400 mt-6">
-                    <FileCheck size={32} className="mb-3 text-green-500" />
-                    <p className="text-sm font-medium text-slate-600">修正の必要はありませんでした。</p>
-                  </div>
-                ) : (
-                  <div className="font-mono text-sm leading-relaxed pb-10">
-                    {currentDiff.map((chunk, chunkIdx) => {
-                      if (chunk.type === 'unchanged') {
-                        return (
-                          <div key={chunkIdx} className="px-3 py-0.5 text-slate-400 opacity-70 whitespace-pre-wrap break-all">
-                            <span className="inline-block w-4 mr-2"></span>{chunk.text}
-                          </div>
-                        );
-                      } else {
-                        return (
-                          <div key={chunkIdx} className="my-4 bg-white border border-slate-200 rounded-md overflow-hidden shadow-sm">
-                            <div className="py-1">
-                              {chunk.lines?.map((line, lineIdx) => (
-                                <div 
-                                  key={lineIdx} 
-                                  className={`px-3 py-1 flex whitespace-pre-wrap break-all ${
-                                    line.type === 'added' ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'
-                                  }`}
-                                >
-                                  <span className={`select-none w-4 flex-shrink-0 font-bold ${
-                                    line.type === 'added' ? 'text-green-500' : 'text-red-500'
-                                  }`}>
-                                    {line.type === 'added' ? '+' : '-'}
-                                  </span>
-                                  <span>{line.text || ' '}</span>
-                                </div>
-                              ))}
-                            </div>
-                            
-                            <div className="bg-blue-50/60 border-t border-blue-100 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                              <div className="flex items-start text-xs text-blue-800">
-                                <MessageSquare size={14} className="mr-2 mt-0.5 flex-shrink-0 text-blue-500" />
-                                <span className="leading-snug">{chunk.reason}</span>
-                              </div>
-                              
-                              <button 
-                                onClick={() => handleApplySuggestion(chunk.id, chunk.originalText, chunk.suggestedText)}
-                                disabled={chunk.applied}
-                                className={`flex-shrink-0 inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium rounded transition-colors border shadow-sm ${
-                                  chunk.applied 
-                                    ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed shadow-none' 
-                                    : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 active:bg-blue-100'
+              ) : currentDiff && currentDiff.length > 0 ? (
+                <div className="font-mono text-sm leading-relaxed pb-10">
+                  {currentDiff.map((chunk, chunkIdx) => {
+                    if (chunk.type === 'unchanged') {
+                      return (
+                        <div key={chunkIdx} className="px-3 py-0.5 text-slate-400 opacity-70 whitespace-pre-wrap break-all">
+                          <span className="inline-block w-4 mr-2"></span>{chunk.text}
+                        </div>
+                      );
+                    } else {
+                      return (
+                        <div key={chunkIdx} className="my-4 bg-white border border-slate-200 rounded-md overflow-hidden shadow-sm">
+                          <div className="py-1">
+                            {(chunk.lines || []).map((line, lineIdx) => (
+                              <div 
+                                key={lineIdx} 
+                                className={`px-3 py-1 flex whitespace-pre-wrap break-all ${
+                                  line.type === 'added' ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'
                                 }`}
                               >
-                                {chunk.applied ? (
-                                  <><Check size={14} className="mr-1" /> 適用済み</>
-                                ) : (
-                                  <><CheckCircle size={14} className="mr-1" /> 修正を適用</>
-                                )}
-                              </button>
-                            </div>
+                                <span className={`select-none w-4 flex-shrink-0 font-bold ${
+                                  line.type === 'added' ? 'text-green-500' : 'text-red-500'
+                                }`}>
+                                  {line.type === 'added' ? '+' : '-'}
+                                </span>
+                                <span>{line.text || ' '}</span>
+                              </div>
+                            ))}
                           </div>
-                        );
-                      }
-                    })}
-                  </div>
-                )
+                          
+                          <div className="bg-blue-50/60 border-t border-blue-100 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-start text-xs text-blue-800">
+                              <MessageSquare size={14} className="mr-2 mt-0.5 flex-shrink-0 text-blue-500" />
+                              <span className="leading-snug">{chunk.reason}</span>
+                            </div>
+                            
+                            <button 
+                              onClick={() => handleApplySuggestion(chunk.id, chunk.originalText, chunk.suggestedText)}
+                              disabled={chunk.applied}
+                              className={`flex-shrink-0 inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium rounded transition-colors border shadow-sm ${
+                                chunk.applied 
+                                  ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed shadow-none' 
+                                  : 'bg-white border-blue-300 text-blue-600 hover:bg-blue-50 active:bg-blue-100'
+                              }`}
+                            >
+                              {chunk.applied ? (
+                                <><Check size={14} className="mr-1" /> 適用済み</>
+                              ) : (
+                                <><CheckCircle size={14} className="mr-1" /> 修正を適用</>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                  })}
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-full text-slate-400 mt-6">
-                  <p className="text-sm text-center px-4 leading-relaxed">
-                    「送信」ボタンを押すと、<br />
-                    システムからの修正案がここに表示され、<br />
-                    クリックで元文へ反映できます。
+                  <p className="text-sm text-center px-4 leading-relaxed whitespace-pre-wrap">
+                    {currentDiff && currentDiff.length === 0 
+                      ? "現在のテキストに変更提案はありませんでした。\n（フォーマットは適切です）"
+                      : "「送信」ボタンを押すと、\nシステムからの修正案がここに表示され、\nクリックで元文へ反映できます。"}
                   </p>
                 </div>
               )}
