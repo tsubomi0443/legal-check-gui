@@ -14,12 +14,15 @@ declare global {
     go?: {
       main: {
         App: {
+          GetDatasourcePath(): Promise<string>;
+          GetFileList(path: string): Promise<string[]>;
+          ReadFile(path: string): Promise<string>;
+          SetNewDatasource(path: string): Promise<boolean>;
           CreateFolder(parentId: string, name: string): Promise<string>;
           DeleteNode(id: string): Promise<boolean>;
           MoveNode(itemId: string, targetFolderId: string): Promise<boolean>;
           SaveFile(name: string, content: string, parentId: string): Promise<string>;
           AnalyzeText(text: string): Promise<string>;
-          SetNewDatasource(path: string): Promise<boolean>;
         }
       }
     }
@@ -67,35 +70,51 @@ type ModalState =
   | { type: 'saveFreeText' }
   | { type: 'dataSource' };
 
-// --- Mock Data ---
-const initialFiles: FileNode[] = [
-  { 
-    id: 'folder-1', name: 'プロジェクト資料', type: 'folder', isOpen: true, 
-    children: [
-      { id: 'file-1', name: '要件定義書.pdf', type: 'pdf' },
-      { id: 'file-2', name: 'ミーティングメモ.txt', type: 'txt' },
-    ]
-  },
-  { id: 'file-3', name: 'README.txt', type: 'txt' }
-];
-
-const initialContents: Record<string, string> = {
-  'file-1': '【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員',
-  'file-2': '2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。',
-  'file-3': 'このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【レイアウト崩れの修正】\n・左ペイン（および右ペイン）を閉じた際に、中の要素がはみ出して重なってしまう不具合を修正しました。\n・コンテナに `overflow-hidden` を追加し、閉じた時は中身が完全に隠れるようになっています。',
-  'free-mode': 'ここは自由記述モードです。\n\n入力して「保存」を押すとフォルダを選んでファイル化できます。\n「送信」を押すとAI分析が始まります。'
-};
-
 // ============================================================================
 // Wails Backend API Wrapper
 // ============================================================================
 const backendAPI = {
+  getDatasourcePath: async (): Promise<string> => {
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.GetDatasourcePath) {
+      return await window.go.main.App.GetDatasourcePath();
+    }
+    // Mock
+    return new Promise(resolve => setTimeout(() => resolve("C:/SampleProject"), 200));
+  },
+  getFileList: async (path: string): Promise<string[]> => {
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.GetFileList) {
+      return await window.go.main.App.GetFileList(path);
+    }
+    // Mock
+    return new Promise(resolve => setTimeout(() => resolve([
+      "プロジェクト資料/要件定義書.pdf",
+      "プロジェクト資料/ミーティングメモ.txt",
+      "README.txt"
+    ]), 400));
+  },
+  readFile: async (path: string): Promise<string> => {
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.ReadFile) {
+      return await window.go.main.App.ReadFile(path);
+    }
+    // Mock
+    return new Promise(resolve => setTimeout(() => {
+      if (path.endsWith('README.txt')) resolve("このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【追加機能】\n・初期化時にGoからパスリストを取得し、ツリーを構築します。\n・ファイルクリック時にGoのReadFile()を呼んで内容を取得します。");
+      else if (path.endsWith('.pdf')) resolve("【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員");
+      else resolve("2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。");
+    }, 300));
+  },
+  setNewDatasource: async (path: string): Promise<boolean> => {
+    if (window.go && window.go.main && window.go.main.App && window.go.main.App.SetNewDatasource) {
+      return await window.go.main.App.SetNewDatasource(path);
+    }
+    return new Promise(resolve => setTimeout(() => resolve(true), 400));
+  },
   createFolder: async (parentId: string | null, name: string): Promise<string> => {
     const pId = parentId || "";
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.CreateFolder) {
       return await window.go.main.App.CreateFolder(pId, name);
     }
-    return new Promise(resolve => setTimeout(() => resolve(`folder-${Date.now()}`), 200));
+    return new Promise(resolve => setTimeout(() => resolve(`${pId ? pId + '/' : ''}${name}`), 200));
   },
   deleteItem: async (id: string): Promise<boolean> => {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.DeleteNode) {
@@ -115,7 +134,7 @@ const backendAPI = {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.SaveFile) {
       return await window.go.main.App.SaveFile(name, content, pId);
     }
-    return new Promise(resolve => setTimeout(() => resolve(`file-${Date.now()}`), 200));
+    return new Promise(resolve => setTimeout(() => resolve(`${pId ? pId + '/' : ''}${name}`), 200));
   },
   analyzeText: async (text: string): Promise<string> => {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.AnalyzeText) {
@@ -131,18 +150,53 @@ const backendAPI = {
       if (suggested.includes(target)) suggested = suggested.replace(target, replacement);
     });
     return new Promise(resolve => setTimeout(() => resolve(suggested), 800));
-  },
-  setNewDatasource: async (path: string): Promise<boolean> => {
-    if (window.go && window.go.main && window.go.main.App && window.go.main.App.SetNewDatasource) {
-      return await window.go.main.App.SetNewDatasource(path);
-    }
-    return new Promise(resolve => setTimeout(() => resolve(true), 400));
   }
 };
 
 // ============================================================================
 // Tree Utils
 // ============================================================================
+// パスの配列からツリー構造を構築する
+const buildTreeFromPaths = (paths: string[]): FileNode[] => {
+  const root: FileNode[] = [];
+  
+  paths.forEach(path => {
+    const parts = path.split(/[/\\]/); // スラッシュまたはバックスラッシュで分割
+    let currentLevel = root;
+    let currentPathId = '';
+
+    parts.forEach((part, index) => {
+      const isFile = index === parts.length - 1;
+      currentPathId += (currentPathId === '' ? '' : '/') + part;
+
+      let existingNode = currentLevel.find(n => n.name === part);
+
+      if (!existingNode) {
+        let type: FileType = 'folder';
+        if (isFile) {
+          const ext = part.split('.').pop()?.toLowerCase();
+          type = (ext === 'pdf' || ext === 'txt' || ext === 'csv' || ext === 'md') ? (ext as FileType) : 'txt';
+        }
+
+        existingNode = {
+          id: currentPathId,
+          name: part,
+          type: type,
+          isOpen: true, // 初期状態は開いておく
+          children: isFile ? undefined : []
+        };
+        currentLevel.push(existingNode);
+      }
+
+      if (!isFile && existingNode.children) {
+        currentLevel = existingNode.children;
+      }
+    });
+  });
+  
+  return root;
+};
+
 const findNode = (nodes: FileNode[], id: string): FileNode | null => {
   for (const node of nodes) {
     if (node.id === id) return node;
@@ -175,7 +229,7 @@ const deleteNodeById = (nodes: FileNode[], id: string): FileNode[] => {
 };
 
 const insertNodeToParent = (nodes: FileNode[], parentId: string | null, newNode: FileNode): FileNode[] => {
-  if (parentId === null) return [...nodes, newNode];
+  if (parentId === null || parentId === "") return [...nodes, newNode];
   return nodes.map(node => {
     if (node.id === parentId && node.type === 'folder') {
       return { ...node, isOpen: true, children: [...(node.children || []), newNode] };
@@ -360,13 +414,16 @@ const FileTreeView: React.FC<TreeProps> = ({
 // Main Application Component
 // ============================================================================
 export default function App() {
-  const [files, setFiles] = useState<FileNode[]>(initialFiles);
-  const [contents, setContents] = useState<Record<string, string>>(initialContents);
-  const [selectedId, setSelectedId] = useState<string>('file-3');
-  const [isFreeMode, setIsFreeMode] = useState<boolean>(false);
+  const [files, setFiles] = useState<FileNode[]>([]);
+  const [contents, setContents] = useState<Record<string, string>>({
+    'free-mode': 'ここは自由記述モードです。\n\n入力して「保存」を押すとフォルダを選んでファイル化できます。\n「送信」を押すとAI分析が始まります。'
+  });
+  const [selectedId, setSelectedId] = useState<string>('');
+  const [isFreeMode, setIsFreeMode] = useState<boolean>(true); 
   
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isLoadingTree, setIsLoadingTree] = useState<boolean>(false);
+  const [isContentLoading, setIsContentLoading] = useState<boolean>(false);
   const [diffResults, setDiffResults] = useState<Record<string, DiffChunk[]>>({});
   
   const [toast, setToast] = useState<ToastType | null>(null);
@@ -391,6 +448,37 @@ export default function App() {
   const settingsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement>(null);
+
+  // ============================================================================
+  // ★ 初期化: Goからパスを取得しツリーを構築
+  // ============================================================================
+  useEffect(() => {
+    const initData = async () => {
+      setIsLoadingTree(true);
+      try {
+        const rootPath = await backendAPI.getDatasourcePath();
+        setDsPath(rootPath);
+        
+        const pathList = await backendAPI.getFileList(rootPath);
+        if (pathList && pathList.length > 0) {
+          const tree = buildTreeFromPaths(pathList);
+          setFiles(tree);
+          
+          const firstFile = pathList.find(p => !p.endsWith('/')); 
+          if (firstFile) {
+             handleSelectFile(firstFile);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        showToast("データソースの初期化に失敗しました", "error");
+      } finally {
+        setIsLoadingTree(false);
+      }
+    };
+    initData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const closeSettings = (e: MouseEvent) => {
@@ -417,46 +505,12 @@ export default function App() {
     if (!fileList || fileList.length === 0) return;
     
     const samplePath = fileList[0].webkitRelativePath;
-    setDsPath(samplePath.split('/')[0] || '選択されたフォルダ');
+    const rootName = samplePath.split('/')[0] || '選択されたフォルダ';
+    setDsPath(rootName);
 
-    const root: FileNode[] = [];
-    
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      const pathParts = file.webkitRelativePath.split('/');
-      let currentLevel = root;
-      let currentPathId = 'ds';
-
-      for (let j = 0; j < pathParts.length; j++) {
-        const part = pathParts[j];
-        const isFile = j === pathParts.length - 1;
-        currentPathId += `/${part}`;
-
-        let existingNode = currentLevel.find(n => n.name === part);
-
-        if (!existingNode) {
-          let type: FileType = 'folder';
-          if (isFile) {
-            const ext = part.split('.').pop()?.toLowerCase();
-            type = (ext === 'pdf' || ext === 'txt' || ext === 'csv' || ext === 'md') ? (ext as FileType) : 'txt';
-          }
-
-          existingNode = {
-            id: currentPathId,
-            name: part,
-            type: type,
-            isOpen: true,
-            children: isFile ? undefined : []
-          };
-          currentLevel.push(existingNode);
-        }
-
-        if (!isFile && existingNode.children) {
-          currentLevel = existingNode.children;
-        }
-      }
-    }
-    setDsNodes(root);
+    const paths = Array.from(fileList).map(f => f.webkitRelativePath);
+    const tree = buildTreeFromPaths(paths);
+    setDsNodes(tree);
   };
 
   const handleDsToggle = (id: string) => {
@@ -470,6 +524,27 @@ export default function App() {
   // ============================================================================
   // Handlers
   // ============================================================================
+  // ★ クリック時にパス（ID）をGoに送信し、結果をプレビューに反映
+  const handleSelectFile = async (id: string) => {
+    setSelectedId(id);
+    setIsFreeMode(false);
+    setInnerPopup(null);
+    
+    const node = findNode(files, id);
+    if (node && node.type !== 'folder') {
+      setIsContentLoading(true);
+      try {
+        const content = await backendAPI.readFile(id);
+        setContents(prev => ({ ...prev, [id]: content }));
+      } catch (e) {
+        console.error(e);
+        showToast("ファイルの読み込みに失敗しました", "error");
+      } finally {
+        setIsContentLoading(false);
+      }
+    }
+  };
+
   const handleCreateFolder = async (name: string) => {
     const parentId = activeNode ? (activeNode.type === 'folder' ? activeNode.id : findParentId(files, activeNode.id)) : null;
     setModal({ type: 'none' });
@@ -580,7 +655,6 @@ export default function App() {
     <div className="flex h-screen bg-gray-50 text-gray-900 font-sans overflow-hidden select-none">
       
       {/* --- Sidebar --- */}
-      {/* ★ 修正: overflow-hidden を外枠の div に追加し、幅0の際にはみ出さないようにしました */}
       <div 
         className="flex flex-col bg-white border-r border-gray-200 transition-[width] duration-200 ease-in-out relative z-10 flex-shrink-0 overflow-hidden"
         style={{ width: showLeft ? leftWidth : 0 }}
@@ -668,7 +742,7 @@ export default function App() {
                     selectedId={selectedId}
                     isFreeMode={isFreeMode}
                     dragOverId={dragOverId}
-                    onSelect={(id) => { setSelectedId(id); setIsFreeMode(false); }}
+                    onSelect={handleSelectFile}
                     onToggle={handleTreeToggle}
                     onDelete={(id, name) => setModal({ type: 'deleteConfirm', id, name })}
                     onDragStart={(e, id) => e.dataTransfer.setData('nodeId', id)}
@@ -770,8 +844,13 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex-1 p-4 bg-gray-50 overflow-hidden select-text">
-            {(!isFreeMode && activeNode?.type === 'folder') ? (
+          <div className="flex-1 p-4 bg-gray-50 overflow-hidden select-text relative">
+            {isContentLoading ? (
+              <div className="h-full flex flex-col items-center justify-center bg-white border border-gray-200 rounded text-gray-400">
+                 <Loader2 size={32} className="animate-spin text-blue-400 mb-4" />
+                 <p className="text-sm">ファイルを読み込んでいます...</p>
+              </div>
+            ) : (!isFreeMode && activeNode?.type === 'folder') ? (
                <div className="h-full flex flex-col items-center justify-center bg-white border border-gray-200 rounded text-gray-400">
                  <FolderOpen size={48} className="mb-4 text-blue-100" />
                  <p className="text-sm">フォルダが選択されています。</p>
@@ -800,7 +879,6 @@ export default function App() {
         )}
 
         {/* Result Pane */}
-        {/* ★ 修正: overflow-hidden を外枠の div に追加しました */}
         <div 
           className="bg-slate-50 border-gray-200 transition-[width,height] duration-200 ease-in-out flex flex-col relative overflow-hidden"
           style={{ 
@@ -902,11 +980,11 @@ export default function App() {
                 />
               )}
               {modal.type === 'deleteConfirm' && (
-                <p className="text-sm text-gray-600">「{modal.name}」を削除しますか？<br/><span className="text-red-500 text-xs mt-2 block">※この操作は元に戻せません。</span></p>
+                <p className="text-sm text-gray-600">「<span className="font-bold text-gray-800">{modal.name}</span>」を削除しますか？<br/><span className="text-red-500 text-xs mt-2 block">※この操作は元に戻せません。</span></p>
               )}
               {modal.type === 'saveFreeText' && (
                 <div className="space-y-4">
-                  <input id="save-name" placeholder="ファイル名 (例: memo.txt)" className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500" defaultValue="memo.txt" />
+                  <input id="save-name" placeholder="ファイル名 (例: memo.txt)" className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500" defaultValue="名称未設定.txt" />
                   <select id="save-folder" className="w-full p-2 border rounded text-sm outline-none bg-white">
                     <option value="">(ルートディレクトリ)</option>
                     {getFolderOptions(files).map(opt => <option key={opt.id} value={opt.id}>{opt.name}</option>)}
@@ -999,3 +1077,5 @@ export default function App() {
     </div>
   );
 }
+
+
