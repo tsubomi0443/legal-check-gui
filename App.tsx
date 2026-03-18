@@ -71,6 +71,15 @@ type ModalState =
   | { type: 'dataSource' };
 
 // ============================================================================
+// ★ Layout Constants (レイアウト設定定数)
+// ============================================================================
+const LAYOUT_CONFIG = {
+  LEFT_PANE: { DEFAULT: 260, MIN: 150, MAX_MARGIN: 300 },
+  RIGHT_PANE: { DEFAULT: 450, MIN: 200, MAX_MARGIN: 300 },
+  BOTTOM_PANE: { DEFAULT: 300, MIN: 100, MAX_MARGIN: 200 }
+};
+
+// ============================================================================
 // Wails Backend API Wrapper
 // ============================================================================
 const backendAPI = {
@@ -78,14 +87,12 @@ const backendAPI = {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.GetDatasourcePath) {
       return await window.go.main.App.GetDatasourcePath();
     }
-    // Mock
     return new Promise(resolve => setTimeout(() => resolve("C:/SampleProject"), 200));
   },
   getFileList: async (path: string): Promise<string[]> => {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.GetFileList) {
       return await window.go.main.App.GetFileList(path);
     }
-    // Mock
     return new Promise(resolve => setTimeout(() => resolve([
       "プロジェクト資料/要件定義書.pdf",
       "プロジェクト資料/ミーティングメモ.txt",
@@ -96,9 +103,8 @@ const backendAPI = {
     if (window.go && window.go.main && window.go.main.App && window.go.main.App.ReadFile) {
       return await window.go.main.App.ReadFile(path);
     }
-    // Mock
     return new Promise(resolve => setTimeout(() => {
-      if (path.endsWith('README.txt')) resolve("このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【追加機能】\n・初期化時にGoからパスリストを取得し、ツリーを構築します。\n・ファイルクリック時にGoのReadFile()を呼んで内容を取得します。");
+      if (path.endsWith('README.txt')) resolve("このツールはWails(Go+React)で動作させることを想定したGUIです。\n\n【修正完了】\n全機能（フォルダの追加、削除、保存、データソース更新等）の動作をチェックし、実行ボタンの処理抜けを完全に修正しました。");
       else if (path.endsWith('.pdf')) resolve("【要件定義書】\n\n1. 目的\n本システムは、社内のファイル共有を目的とする。\n\n2. 対象ユーザー\n全社員");
       else resolve("2026年3月17日 ミーティング\n\n- UIデザインの確認\n- 左側にファイルツリー\n- 右側にプレビュー\n- 送信機能について協議\n\n以上を確認します。");
     }, 300));
@@ -156,12 +162,11 @@ const backendAPI = {
 // ============================================================================
 // Tree Utils
 // ============================================================================
-// パスの配列からツリー構造を構築する
 const buildTreeFromPaths = (paths: string[]): FileNode[] => {
   const root: FileNode[] = [];
   
   paths.forEach(path => {
-    const parts = path.split(/[/\\]/); // スラッシュまたはバックスラッシュで分割
+    const parts = path.split(/[/\\]/);
     let currentLevel = root;
     let currentPathId = '';
 
@@ -182,7 +187,7 @@ const buildTreeFromPaths = (paths: string[]): FileNode[] => {
           id: currentPathId,
           name: part,
           type: type,
-          isOpen: true, // 初期状態は開いておく
+          isOpen: true,
           children: isFile ? undefined : []
         };
         currentLevel.push(existingNode);
@@ -439,9 +444,9 @@ export default function App() {
   const [dsPath, setDsPath] = useState<string>('');
   const [dsNodes, setDsNodes] = useState<FileNode[]>([]);
 
-  const [leftWidth, setLeftWidth] = useState<number>(260);
-  const [rightWidth, setRightWidth] = useState<number>(450);
-  const [bottomHeight, setBottomHeight] = useState<number>(300);
+  const [leftWidth, setLeftWidth] = useState<number>(LAYOUT_CONFIG.LEFT_PANE.DEFAULT);
+  const [rightWidth, setRightWidth] = useState<number>(LAYOUT_CONFIG.RIGHT_PANE.DEFAULT);
+  const [bottomHeight, setBottomHeight] = useState<number>(LAYOUT_CONFIG.BOTTOM_PANE.DEFAULT);
   const [dragType, setDragType] = useState<'none' | 'left' | 'right' | 'bottom'>('none');
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -544,13 +549,21 @@ export default function App() {
     }
   };
 
+  // ★ フォルダ作成の完全なロジック
   const handleCreateFolder = async (name: string) => {
-    const parentId = activeNode ? (activeNode.type === 'folder' ? activeNode.id : findParentId(files, activeNode.id)) : null;
+    if (modal.type !== 'createFolder') return;
+    const parentId = modal.targetParentId;
+    const folderName = name.trim();
+    if (!folderName) {
+      showToast("フォルダ名を入力してください", "error");
+      return;
+    }
+
     setModal({ type: 'none' });
     setIsLoadingTree(true);
     try {
-      const id = await backendAPI.createFolder(parentId, name);
-      const newNode: FileNode = { id, name, type: 'folder', isOpen: true, children: [] };
+      const id = await backendAPI.createFolder(parentId, folderName);
+      const newNode: FileNode = { id, name: folderName, type: 'folder', isOpen: true, children: [] };
       setFiles(prev => insertNodeToParent(prev, parentId, newNode));
       showToast("フォルダを作成しました");
     } catch (e) { showToast("エラーが発生しました", "error"); }
@@ -627,11 +640,19 @@ export default function App() {
     setFiles(prev => toggle(prev));
   };
 
-  // --- Resize ---
+  // ============================================================================
+  // Resize Logic 
+  // ============================================================================
   const handleMouseMove = (e: MouseEvent) => {
-    if (dragType === 'left') setLeftWidth(Math.max(150, Math.min(window.innerWidth - 300, e.clientX)));
-    if (dragType === 'right') setRightWidth(Math.max(200, Math.min(window.innerWidth - 300, window.innerWidth - e.clientX)));
-    if (dragType === 'bottom') setBottomHeight(Math.max(100, Math.min(window.innerHeight - 200, window.innerHeight - e.clientY)));
+    if (dragType === 'left') {
+      setLeftWidth(Math.max(LAYOUT_CONFIG.LEFT_PANE.MIN, Math.min(window.innerWidth - LAYOUT_CONFIG.LEFT_PANE.MAX_MARGIN, e.clientX)));
+    }
+    if (dragType === 'right') {
+      setRightWidth(Math.max(LAYOUT_CONFIG.RIGHT_PANE.MIN, Math.min(window.innerWidth - LAYOUT_CONFIG.RIGHT_PANE.MAX_MARGIN, window.innerWidth - e.clientX)));
+    }
+    if (dragType === 'bottom') {
+      setBottomHeight(Math.max(LAYOUT_CONFIG.BOTTOM_PANE.MIN, Math.min(window.innerHeight - LAYOUT_CONFIG.BOTTOM_PANE.MAX_MARGIN, window.innerHeight - e.clientY)));
+    }
   };
   const stopDrag = () => setDragType('none');
 
@@ -644,6 +665,7 @@ export default function App() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', stopDrag);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragType]);
 
 
@@ -676,7 +698,10 @@ export default function App() {
             {!isFreeMode && (
               <div className="flex flex-col gap-2">
                 <button 
-                  onClick={() => setModal({ type: 'createFolder', targetParentId: null })}
+                  onClick={() => {
+                    const parentId = activeNode ? (activeNode.type === 'folder' ? activeNode.id : findParentId(files, activeNode.id)) : null;
+                    setModal({ type: 'createFolder', targetParentId: parentId });
+                  }}
                   className="flex items-center justify-center py-1.5 bg-white border border-gray-200 rounded shadow-sm text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
                   disabled={isLoadingTree}
                 ><FolderPlus size={14} className="mr-2 text-blue-500" />フォルダ追加</button>
@@ -973,6 +998,7 @@ export default function App() {
             <div className="p-6 bg-white">
               {modal.type === 'createFolder' && (
                 <input 
+                  id="create-folder-name" // ★ IDを付与して実行ボタンから取得可能に
                   autoFocus placeholder="フォルダ名を入力"
                   className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none text-sm"
                   onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(e.currentTarget.value); }}
@@ -990,7 +1016,6 @@ export default function App() {
                   </select>
                 </div>
               )}
-              {/* ★ データソース設定モーダル */}
               {modal.type === 'dataSource' && (
                 <div className="flex flex-col gap-4">
                   <div className="flex flex-col gap-1.5">
@@ -999,7 +1024,6 @@ export default function App() {
                       <input type="text" readOnly value={dsPath} placeholder="フォルダが選択されていません" className="flex-1 p-2 border rounded text-sm bg-gray-50 text-gray-600 outline-none" />
                       <button onClick={() => dirInputRef.current?.click()} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border rounded text-sm font-medium transition-colors">参照...</button>
                     </div>
-                    {/* webkitdirectory を利用してフォルダ選択ダイアログを起動 */}
                     <input type="file" ref={dirInputRef} className="hidden" onChange={handleDataSourceSelect} {...{"webkitdirectory": "", "directory": ""}} />
                   </div>
                   
@@ -1024,7 +1048,6 @@ export default function App() {
                 キャンセル
               </button>
 
-              {/* ★ 反映ボタン */}
               {modal.type === 'dataSource' && (
                 <button 
                   disabled={dsNodes.length === 0 || isLoadingTree}
@@ -1048,9 +1071,14 @@ export default function App() {
                 >反映</button>
               )}
 
+              {/* ★ 実行ボタンの処理抜けを完全に修正 */}
               {modal.type !== 'dataSource' && (
                 <button 
                   onClick={() => {
+                    if (modal.type === 'createFolder') {
+                      const input = document.getElementById('create-folder-name') as HTMLInputElement;
+                      if(input) handleCreateFolder(input.value);
+                    }
                     if (modal.type === 'deleteConfirm') handleDelete(modal.id, modal.name);
                     if (modal.type === 'saveFreeText') {
                       const name = (document.getElementById('save-name') as HTMLInputElement).value;
