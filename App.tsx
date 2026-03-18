@@ -524,7 +524,6 @@ export default function App() {
   // ============================================================================
   // Handlers
   // ============================================================================
-  // ★ クリック時にパス（ID）をGoに送信し、結果をプレビューに反映
   const handleSelectFile = async (id: string) => {
     setSelectedId(id);
     setIsFreeMode(false);
